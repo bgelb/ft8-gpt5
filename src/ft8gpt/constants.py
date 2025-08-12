@@ -38,13 +38,17 @@ FT8_GRAY_MAP = (0, 1, 3, 2, 5, 6, 4, 7)
 
 def gray_to_bits(gray_symbol: int) -> tuple[int, int, int]:
     """Return the three bits (b2,b1,b0) corresponding to a Gray-coded tone index."""
-    v = FT8_GRAY_MAP[gray_symbol]
-    return (v >> 2) & 1, (v >> 1) & 1, v & 1
+    # Inverse of Gray coding: binary b from gray g via iterative XOR
+    b = gray_symbol & 7
+    b ^= (b >> 1)
+    b ^= (b >> 2)
+    return (b >> 2) & 1, (b >> 1) & 1, b & 1
 
 
 def bits_to_gray(b2: int, b1: int, b0: int) -> int:
     """Return Gray-coded tone index for the three bits (b2,b1,b0)."""
     idx = (b2 & 1) << 2 | (b1 & 1) << 1 | (b0 & 1)
+    # Binary to Gray: g = b ^ (b >> 1) equals FT8_GRAY_MAP[idx]
     return FT8_GRAY_MAP[idx]
 
 

@@ -9,6 +9,7 @@ src/ft8gpt/ldpc.py
 src/ft8gpt/message.py
 src/ft8gpt/sync.py
 src/ft8gpt/tones.py
+src/ft8gpt/waterfall.py
 src/ft8gpt.egg-info/PKG-INFO
 src/ft8gpt.egg-info/SOURCES.txt
 src/ft8gpt.egg-info/dependency_links.txt
@@ -18,3 +19,4 @@ tests/test_api_smoke.py
 tests/test_crc.py
 tests/test_dataset_regression.py
 tests/test_runtime_benchmark.py
+tests/test_waterfall_sync_smoke.py
