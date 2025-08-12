@@ -1,0 +1,14 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+
+# Test caches and artifacts
+.pytest_cache/
+.benchmarks/
+
+# Packaging metadata
+*.egg-info/
+
+# Local virtual environments
+.venv/
+venv/

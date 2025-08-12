@@ -13,19 +13,16 @@ if [[ "${1:-}" == "--clean" ]]; then
   exit 0
 fi
 
-# Require Python >=3.11; prefer 3.13 then 3.12 then 3.11
+# Require Python >=3.11; prefer 3.11 then 3.12 then 3.13 (numba pin incompatible with 3.13)
 select_python() {
-  for bin in python3.13 python3.12 python3.11; do
+  for bin in python3.11 python3.12 python3.13; do
     if command -v "$bin" >/dev/null 2>&1; then
       echo "$bin"; return 0
     fi
   done
   # Fallback to python3 if it is sufficiently new
   if command -v python3 >/dev/null 2>&1; then
-    if python3 - <<'PY' >/dev/null 2>&1; then exit 0; else exit 1; fi <<'PY'
-import sys; raise SystemExit(0 if (sys.version_info.major, sys.version_info.minor) >= (3,11) else 1)
-PY
-    then
+    if python3 -c 'import sys; raise SystemExit(0 if (sys.version_info.major, sys.version_info.minor) >= (3,11) else 1)' >/dev/null 2>&1; then
       echo python3; return 0
     fi
   fi
@@ -34,7 +31,7 @@ PY
 
 PYBIN=$(select_python || true)
 if [[ -z "${PYBIN:-}" ]]; then
-  echo "Error: Python >=3.11 is required. Please install Python 3.11+ (3.13 recommended) and re-run." >&2
+  echo "Error: Python >=3.11 is required. Please install Python 3.11+ and re-run." >&2
   exit 1
 fi
 
@@ -42,12 +39,10 @@ echo "Using interpreter: $($PYBIN -V)"
 
 # Recreate venv if it exists with an older Python
 if [[ -x "$VENV_DIR/bin/python" ]]; then
-  if ! "$VENV_DIR/bin/python" - <<'PY' >/dev/null 2>&1; then
+  if ! "$VENV_DIR/bin/python" -c 'import sys; raise SystemExit(0 if (sys.version_info.major, sys.version_info.minor) >= (3,11) else 1)' >/dev/null 2>&1; then
     echo "Existing venv uses Python <3.11; recreating..."
     rm -rf "$VENV_DIR"
-  fi <<'PY'
-import sys; raise SystemExit(0 if (sys.version_info.major, sys.version_info.minor) >= (3,11) else 1)
-PY
+  fi
 fi
 
 "$PYBIN" -m venv "$VENV_DIR"

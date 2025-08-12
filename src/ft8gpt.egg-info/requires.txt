@@ -1,6 +1,0 @@
-numpy>=1.26
-scipy>=1.11
-soundfile>=0.12
-numba>=0.58
-pytest>=7.4
-pytest-benchmark>=4.0.0
