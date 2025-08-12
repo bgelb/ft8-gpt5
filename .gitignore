@@ -2,17 +2,13 @@
 __pycache__/
 *.py[cod]
 
-# Test cache
+# Test caches and artifacts
 .pytest_cache/
+.benchmarks/
 
-# Build/packaging artifacts
+# Packaging metadata
 *.egg-info/
-dist/
-build/
 
-# Virtual environments (local)
+# Local virtual environments
 .venv/
 venv/
-
-# Project-specific
-src/ft8gpt.egg-info/
