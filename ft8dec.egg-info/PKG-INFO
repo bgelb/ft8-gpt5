@@ -1,0 +1,38 @@
+Metadata-Version: 2.4
+Name: ft8dec
+Version: 0.1.0
+Summary: Educational FT8 decoder library with tests and benchmarks
+Author-email: FT8 Dev <devnull@example.com>
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.26
+Requires-Dist: scipy>=1.12
+Requires-Dist: numba>=0.58
+Requires-Dist: soundfile>=0.12
+Requires-Dist: pytest>=8.0
+Requires-Dist: pytest-benchmark>=4.0
+
+FT8 Decoder (Educational)
+
+This project implements an educational FT8 decoder library in Python with a focus on clear structure, tests, and reproducible benchmarks.
+
+- Library: `ft8dec`
+- Tests: `pytest` with regression/perf gates
+- Dataset: fixed commit from `kgoba/ft8_lib` test WAVs
+
+Install
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install -e .
+```
+
+Run tests
+
+```bash
+pytest
+```
+

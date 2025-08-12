@@ -1,0 +1,16 @@
+README.md
+pyproject.toml
+setup.cfg
+ft8dec/__init__.py
+ft8dec/constants.py
+ft8dec/crc14.py
+ft8dec/decoder.py
+ft8dec/io.py
+ft8dec/types.py
+ft8dec.egg-info/PKG-INFO
+ft8dec.egg-info/SOURCES.txt
+ft8dec.egg-info/dependency_links.txt
+ft8dec.egg-info/requires.txt
+ft8dec.egg-info/top_level.txt
+tests/test_crc14.py
+tests/test_dataset_regression.py

@@ -17,11 +17,11 @@ def crc14(bits: np.ndarray) -> int:
     """
     if bits.ndim != 1:
         raise ValueError("bits must be 1-D array")
-    reg = INIT
+    reg = int(INIT)
     for b in bits.astype(np.uint8):
-        reg ^= (b & 1) << (WIDTH - 1)
+        reg ^= (int(b) & 1) << (WIDTH - 1)
         msb = (reg >> (WIDTH - 1)) & 1
         reg = ((reg << 1) & MASK)
         if msb:
             reg ^= POLY & MASK
-    return reg & MASK
+    return int(reg & MASK)
