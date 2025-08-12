@@ -4,8 +4,10 @@ src/ft8gpt/__init__.py
 src/ft8gpt/api.py
 src/ft8gpt/constants.py
 src/ft8gpt/crc.py
+src/ft8gpt/decoder_e2e.py
 src/ft8gpt/dsp.py
 src/ft8gpt/ldpc.py
+src/ft8gpt/ldpc_tables.py
 src/ft8gpt/message.py
 src/ft8gpt/sync.py
 src/ft8gpt/tones.py
@@ -18,5 +20,6 @@ src/ft8gpt.egg-info/top_level.txt
 tests/test_api_smoke.py
 tests/test_crc.py
 tests/test_dataset_regression.py
+tests/test_end_to_end_strong.py
 tests/test_runtime_benchmark.py
 tests/test_waterfall_sync_smoke.py

@@ -7,6 +7,7 @@ import soundfile as sf
 from pathlib import Path
 
 from .decoder_e2e import decode_block
+from .message_decode import unpack_standard_payload
 
 @dataclass(frozen=True)
 class DecodeResult:
@@ -31,9 +32,18 @@ def decode_wav(path: str) -> List[DecodeResult]:
     decs = decode_block(x, float(sample_rate_hz), parity)
     results: List[DecodeResult] = []
     for d in decs:
+        # Reconstruct payload bytes (first 77 bits) and attempt to unpack as standard
+        payload_bits = np.concatenate([d.bits_with_crc[:77], np.zeros(3, dtype=np.uint8)])
+        # Pad to 80 bits (10 bytes) for convenience
+        b = np.packbits(payload_bits)[:10].tobytes()
+        try:
+            dec = unpack_standard_payload(b)
+            msg = f"{dec.call_to} {dec.call_de} {dec.extra}".strip()
+        except Exception:
+            msg = ""
         results.append(
             DecodeResult(
-                start_time_s=0.0, frequency_hz=0.0, snr_db=0.0, message="", crc14_ok=True
+                start_time_s=0.0, frequency_hz=0.0, snr_db=0.0, message=msg, crc14_ok=True
             )
         )
     return results
