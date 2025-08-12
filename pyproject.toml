@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ft8gpt"
+version = "0.1.0"
+description = "FT8 decoder from first principles"
+authors = [{name="FT8 GPT-5"}]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26",
+  "scipy>=1.11",
+  "soundfile>=0.12",
+  "numba>=0.58",
+  "pytest>=7.4",
+  "pytest-benchmark>=4.0.0",
+]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-q"
+markers = [
+  "slow: long-running tests",
+  "regression: dataset regression tests",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.coverage.run]
+branch = true
+source = ["src/ft8gpt"]
+
+[tool.coverage.report]
+show_missing = true
+
+
