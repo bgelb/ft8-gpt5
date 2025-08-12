@@ -26,32 +26,47 @@ def compute_waterfall_symbols(signal: NDArray[np.float64], sample_rate_hz: float
     - Frequency resolution equals tone spacing when fs is 12000 Hz
     """
     n_fft = int(round(sample_rate_hz * SYMBOL_PERIOD_S))
-    if start_sample + num_symbols * n_fft > signal.size:
-        num_symbols = max(0, (signal.size - start_sample) // n_fft)
-    win = get_window("hann", n_fft, fftbins=True).astype(np.float64)
-    win /= np.sqrt(np.sum(win ** 2))  # energy-normalized
+    # Bound the number of symbols to available samples (after start)
+    max_symbols = max(0, (signal.size - start_sample + n_fft - 1) // n_fft)
+    num_symbols = min(num_symbols, max_symbols)
 
-    # Compute spectra for each symbol
-    spectra = np.empty((num_symbols, n_fft // 2 + 1), dtype=np.complex128)
-    for s in range(num_symbols):
-        seg = signal[start_sample + s * n_fft: start_sample + (s + 1) * n_fft]
-        if seg.size < n_fft:
-            seg = np.pad(seg, (0, n_fft - seg.size))
-        xw = seg * win
-        spectra[s, :] = np.fft.rfft(xw)
+    # Build window and normalize energy
+    win = get_window("hann", n_fft, fftbins=True).astype(np.float64)
+    win /= np.sqrt(np.sum(win ** 2))
+
+    if num_symbols == 0:
+        empty = np.empty((0, 0, FSK_TONES), dtype=np.float64)
+        return Waterfall(mag=empty, sample_rate_hz=sample_rate_hz, n_fft=n_fft, base_bin0_hz=0.0)
+
+    # Create a 2D view of frames with step n_fft. Pad once if needed.
+    need = start_sample + num_symbols * n_fft
+    if signal.size < need:
+        pad = need - signal.size
+        sig = np.pad(signal, (0, pad))
+    else:
+        sig = signal
+    frames = sig[start_sample:start_sample + num_symbols * n_fft].reshape(num_symbols, n_fft)
+
+    # Window and FFT across the frame axis
+    xw = frames * win[None, :]
+    spectra = np.fft.rfft(xw, axis=1)
 
     mags = np.abs(spectra).astype(np.float64)
     mags = np.maximum(mags, 1e-12)
     # Convert to log magnitude for robustness
     mags_db = 20.0 * np.log10(mags)
 
-    # Construct base bins (k0..k0+7 must be in range)
+    # Construct base bins using a sliding window over frequency bins
     num_bins = mags_db.shape[1]
-    num_bases = max(0, num_bins - FSK_TONES)
-    wf = np.empty((num_symbols, num_bases, FSK_TONES), dtype=np.float64)
-    for k0 in range(num_bases):
-        wf[:, k0, :] = mags_db[:, k0:k0 + FSK_TONES]
-
+    # Include the last valid base (k0..k0+7 in range) → +1
+    num_bases = max(0, num_bins - FSK_TONES + 1)
+    if num_bases == 0:
+        wf = np.empty((num_symbols, 0, FSK_TONES), dtype=np.float64)
+    else:
+        wf = np.lib.stride_tricks.sliding_window_view(
+            mags_db, window_shape=FSK_TONES, axis=1
+        )
+        # Result shape [S, B, 8]
     base_bin0_hz = 0.0  # rfft bin 0
     return Waterfall(mag=wf, sample_rate_hz=sample_rate_hz, n_fft=n_fft, base_bin0_hz=base_bin0_hz)
 

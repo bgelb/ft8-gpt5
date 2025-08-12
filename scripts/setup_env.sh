@@ -51,17 +51,19 @@ PY
 fi
 
 "$PYBIN" -m venv "$VENV_DIR"
+# shellcheck source=/dev/null
 source "$VENV_DIR/bin/activate"
 python -m pip install --upgrade pip >/dev/null
 
 echo "Installing dependencies..."
-pip install -r "$ROOT_DIR/requirements.txt"
+pip install -r "$ROOT_DIR/requirements.txt" >/dev/null
 
 echo "Installing project (editable)..."
 pip install -e "$ROOT_DIR" >/dev/null
 
 echo "Running tests..."
 pytest -q
+
 echo "Environment ready."
 
 

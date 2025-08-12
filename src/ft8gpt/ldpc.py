@@ -13,6 +13,25 @@ class BeliefPropagationConfig:
     max_iterations: int = 30
     early_stop_no_improve: int = 5
     damping: float = 0.0
+    alpha: float = 0.8  # normalized min-sum scaling factor (0.7..0.9 typical)
+
+
+def _build_row_index_of_col_in_row(Mn: NDArray[np.int32], Nm: NDArray[np.int32]) -> NDArray[np.int32]:
+    """Precompute, for each variable n and its three connected checks (rows), the index j such that
+    Nm[row, j] == n. Missing entries are set to -1.
+    """
+    row_index = np.full((LDPC_N, 3), -1, dtype=np.int32)
+    for n in range(LDPC_N):
+        for m_idx in range(3):
+            r = Mn[n, m_idx]
+            if r < 0:
+                continue
+            # search n in row r once
+            ridxs = Nm[r]
+            where = np.where(ridxs == n)[0]
+            if where.size:
+                row_index[n, m_idx] = int(where[0])
+    return row_index
 
 
 def min_sum_decode(
@@ -32,6 +51,9 @@ def min_sum_decode(
     row_deg = np.sum(Nm >= 0, axis=1)
     max_deg = Nm.shape[1]
     toc = np.zeros((LDPC_M, max_deg), dtype=np.float64)
+
+    # Precompute index j per (n, m_idx) to avoid np.where in inner loop
+    row_index = _build_row_index_of_col_in_row(Mn, Nm)
 
     best_errors = LDPC_M + 1
     best_bits = np.zeros(LDPC_N, dtype=np.uint8)
@@ -61,13 +83,16 @@ def min_sum_decode(
 
         # Check node update: messages from check r to each connected variable
         for r in range(LDPC_M):
-            idxs = Nm[r, : row_deg[r]]
-            if idxs.size == 0:
+            deg = int(row_deg[r])
+            if deg == 0:
                 continue
-            incoming = np.empty_like(idxs, dtype=np.float64)
-            for i, n in enumerate(idxs):
-                # message to r from n is llr[n] + sum tov[n, other checks]
-                # find position of r in Mn[n]
+            idxs = Nm[r, :deg]
+            incoming = np.empty(deg, dtype=np.float64)
+            # Build incoming messages for each connected variable
+            for i in range(deg):
+                n = int(idxs[i])
+                # Sum tov from other checks connected to n (exclude r)
+                # Identify which of the three entries refers to row r
                 where = np.where(Mn[n] == r)[0]
                 mpos = int(where[0]) if where.size else 0
                 incoming[i] = llr_174[n] + tov[n, (np.arange(3) != mpos)].sum()
@@ -75,8 +100,10 @@ def min_sum_decode(
             signs = np.sign(incoming)
             absvals = np.abs(incoming)
             prod_sign = np.prod(signs) if signs.size > 0 else 1.0
-            min1 = np.min(absvals)
-            for i in range(len(idxs)):
+            min1 = np.min(absvals) if deg > 0 else 0.0
+            # Normalized min-sum scaling
+            min1 *= config.alpha
+            for i in range(deg):
                 s_excl = prod_sign / (signs[i] if signs[i] != 0 else 1.0)
                 new_msg = s_excl * min1
                 if config.damping > 0.0:
@@ -90,15 +117,13 @@ def min_sum_decode(
                 r = Mn[n, m_idx]
                 if r < 0:
                     continue
-                # find index j of n in row r
-                ridxs = Nm[r, : row_deg[r]]
-                j = int(np.where(ridxs == n)[0][0])
+                j = int(row_index[n, m_idx])
+                if j < 0:
+                    continue
+                deg = int(row_deg[r])
                 # Sum all check messages to n excluding from r
-                sum_checks = 0.0
-                for j2 in range(row_deg[r]):
-                    if j2 == j:
-                        continue
-                    sum_checks += toc[r, j2]
+                # Compute total once and subtract toc[r, j]
+                sum_checks = float(np.sum(toc[r, :deg])) - float(toc[r, j])
                 new_val = llr_174[n] + sum_checks
                 if config.damping > 0.0:
                     tov[n, m_idx] = (1 - config.damping) * new_val + config.damping * tov[n, m_idx]
