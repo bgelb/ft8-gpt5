@@ -3,7 +3,7 @@ Name: ft8gpt
 Version: 0.1.0
 Summary: FT8 decoder from first principles
 Author: FT8 GPT-5
-Requires-Python: >=3.10
+Requires-Python: >=3.9
 Description-Content-Type: text/markdown
 Requires-Dist: numpy>=1.26
 Requires-Dist: scipy>=1.11
