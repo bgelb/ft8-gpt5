@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "FT8 decoder from first principles"
 authors = [{name="FT8 GPT-5"}]
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = [
   "numpy>=1.26",
   "scipy>=1.11",
@@ -20,7 +20,7 @@ dependencies = [
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-addopts = "-q"
+addopts = "-q -m 'not slow'"
 markers = [
   "slow: long-running tests",
   "regression: dataset regression tests",
