@@ -1,0 +1,222 @@
+Metadata-Version: 2.4
+Name: ft8gpt
+Version: 0.1.0
+Summary: FT8 decoder from first principles
+Author: FT8 GPT-5
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.26
+Requires-Dist: scipy>=1.11
+Requires-Dist: soundfile>=0.12
+Requires-Dist: numba>=0.58
+Requires-Dist: pytest>=7.4
+Requires-Dist: pytest-benchmark>=4.0.0
+
+# FT8-GPT5
+
+A from-scratch FT8 decoder library with tests and benchmarks.
+
+- Python 3.11+
+- Numpy/SciPy/Numba-based DSP
+- Clean, test-first engineering
+- Regression harness using `kgoba/ft8_lib` sample WAVs
+EOF
+
+cat > AGENTS.md << \"EOF\"
+# Engineering conventions for ft8gpt
+
+- Use Python 3.11+.
+- Prefer pure functions and immutability.
+- Include units in variable names, e.g., `sample_rate_hz`.
+- Functions should be verbs; data types should be nouns.
+- Add type hints everywhere.
+- Keep functions under ~50 LOC when possible.
+- Write tests alongside code; new code requires tests.
+- Avoid premature optimization; profile before optimizing.
+- Document tricky algorithms with references in module docstrings.
+- Prefer composition over inheritance.
+- Use numpy arrays for numeric data; dataclasses for structured records.
+EOF
+
+cat > pyproject.toml << \"EOF\"
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ft8gpt"
+version = "0.1.0"
+description = "FT8 decoder from first principles"
+authors = [{name="FT8 GPT-5"}]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26",
+  "scipy>=1.11",
+  "soundfile>=0.12",
+  "numba>=0.58",
+  "pytest>=7.4",
+  "pytest-benchmark>=4.0.0",
+  "requests>=2.31",
+]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-q"
+markers = [
+  "slow: long-running tests",
+  "regression: dataset regression tests",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.coverage.run]
+branch = true
+source = ["src/ft8gpt"]
+
+[tool.coverage.report]
+show_missing = true
+EOF
+
+cat > .github/workflows/ci.yml << \"EOF\"
+name: CI
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: 3.11
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+      - name: Run tests
+        run: |
+          pytest -q
+EOF
+
+cat > src/ft8gpt/__init__.py << \"EOF\"
+"""FT8-GPT5: A from-scratch FT8 decoder library."""
+__all__ = [
+    "decode_wav",
+]
+__version__ = "0.1.0"
+
+from .decoder import decode_wav  # noqa: E402
+EOF
+
+cat > src/ft8gpt/decoder.py << \"EOF\"
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import List, Tuple
+import numpy as np
+import soundfile as sf
+
+@dataclass(frozen=True)
+class DecodeResult:
+    start_time_s: float
+    frequency_hz: float
+    snr_db: float
+    message: str
+    crc14_ok: bool
+
+
+def decode_wav(path: str) -> List[DecodeResult]:
+    """
+    Decode all FT8 signals in a 15-second WAV file.
+
+    This minimal implementation is a placeholder returning no decodes.
+    """
+    samples, sample_rate_hz = sf.read(path, always_2d=False)
+    if samples.ndim > 1:
+        samples = samples[:, 0]
+    samples = samples.astype(np.float64)
+    # TODO: implement full pipeline
+    return []
+EOF
+
+cat > src/ft8gpt/crc.py << \"EOF\"
+from __future__ import annotations
+import numpy as np
+
+# FT8 uses CRC-14 with polynomial x^14 + x^13 + x^12 + x^11 + x^8 + x^6 + x^5 + x^4 + x^2 + x + 1
+# Polynomial (no top bit) as integer: 0x2757 (per WSJT-X/FT8 spec)
+CRC14_POLY = 0x2757
+CRC14_MASK = (1 << 14) - 1
+
+
+def crc14(bits: np.ndarray) -> int:
+    """
+    Compute CRC-14 over a bit array (numpy array of {0,1}).
+    Returns integer CRC value (14 bits).
+    """
+    reg = 0
+    for bit in bits.astype(np.uint8):
+        reg ^= (bit & 1) << 13
+        feedback = (reg >> 13) & 1
+        reg = ((reg << 1) & CRC14_MASK)
+        if feedback:
+            reg ^= CRC14_POLY
+    return reg & CRC14_MASK
+
+
+def crc14_check(bits_with_crc: np.ndarray) -> bool:
+    """Return True if CRC-14 over payload equals appended 14-bit CRC."""
+    if bits_with_crc.size < 14:
+        return False
+    payload = bits_with_crc[:-14]
+    crc_bits = bits_with_crc[-14:]
+    expected = crc14(payload)
+    got = 0
+    for b in crc_bits.astype(np.uint8):
+        got = (got << 1) | (b & 1)
+    return expected == got
+EOF
+
+cat > tests/test_crc.py << \"EOF\"
+import numpy as np
+from ft8gpt.crc import crc14, crc14_check
+
+
+def test_crc14_roundtrip():
+    payload = np.zeros(77, dtype=np.uint8)
+    c = crc14(payload)
+    bits = np.concatenate([payload, np.array([(c >> i) & 1 for i in range(13, -1, -1)], dtype=np.uint8)])
+    assert crc14_check(bits)
+
+
+def test_crc14_variation():
+    payload = np.array([int(x) for x in "1010101" * 11][:77], dtype=np.uint8)
+    c = crc14(payload)
+    bits = np.concatenate([payload, np.array([(c >> i) & 1 for i in range(13, -1, -1)], dtype=np.uint8)])
+    assert crc14_check(bits)
+    # Flip a bit to ensure failure
+    bits = bits.copy()
+    bits[0] ^= 1
+    assert not crc14_check(bits)
+EOF
+
+cat > tests/test_api_smoke.py << \"EOF\"
+from ft8gpt import decode_wav
+
+
+def test_decode_smoke(tmp_path):
+    # Create a silent 15s mono WAV and ensure API does not crash
+    import numpy as np
+    import soundfile as sf
+    sr = 12000
+    x = np.zeros(sr * 15, dtype=np.float32)
+    wav = tmp_path / "silent.wav"
+    sf.write(str(wav), x, sr)
+    results = decode_wav(str(wav))
+    assert isinstance(results, list)
+EOF
+
+git add .; git commit -m "chore: scaffold ft8gpt package, CRC-14, smoke tests and CI"
