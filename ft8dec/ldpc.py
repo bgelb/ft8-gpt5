@@ -68,7 +68,7 @@ def bp_decode(llr174: np.ndarray, max_iters: int = 50) -> Tuple[np.ndarray, int]
         bits = np.zeros(Nloc, dtype=np.uint8)
         for v in range(Nloc):
             llr = float(llr174[v]) + sum(c2v[(ci, v)] for ci in COL_NEIGHBORS[v])
-            bits[v] = 1 if llr < 0 else 0  # convention: positive favors 1 above; match mapping downstream
+            bits[v] = 1 if llr > 0 else 0
         # Compute parity checks
         unsat = 0
         for ci, cols in enumerate(ROW_NEIGHBORS):
