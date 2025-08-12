@@ -36,5 +36,6 @@ def test_decode_one_strong_sample_runtime(benchmark):
 
     results = benchmark(run_decode)
     assert isinstance(results, list)
+    # Not asserting decode counts yet; baseline ensures non-regression in crash/runtimes
 
 

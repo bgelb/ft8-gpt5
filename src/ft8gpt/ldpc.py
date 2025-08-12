@@ -12,16 +12,99 @@ from .constants import LDPC_N, LDPC_M
 class BeliefPropagationConfig:
     max_iterations: int = 30
     early_stop_no_improve: int = 5
+    damping: float = 0.0
 
 
-def bp_decode(log_likelihood_174: NDArray[np.float64], config: BeliefPropagationConfig) -> Tuple[int, NDArray[np.uint8]]:
+def min_sum_decode(
+    llr_174: NDArray[np.float64],
+    Mn: NDArray[np.int32],
+    Nm: NDArray[np.int32],
+    config: BeliefPropagationConfig,
+) -> Tuple[int, NDArray[np.uint8]]:
     """
-    Minimal placeholder for LDPC(174,91) belief propagation decoder.
-    For now returns a hard decision on the input and zero errors count.
+    Min-sum LDPC decoder for (174,91) code using sparse connectivity.
+
+    Returns (num_unsatisfied_checks, hard_bits)
     """
-    x = (log_likelihood_174 > 0).astype(np.uint8)
-    # TODO: implement true BP using sparse Nm/Mn.
-    errors = 0
-    return errors, x
+    # Initialize messages variable->check
+    tov = np.zeros((LDPC_N, 3), dtype=np.float64)
+    # toc allocated with per-row variable degrees
+    row_deg = np.sum(Nm >= 0, axis=1)
+    max_deg = Nm.shape[1]
+    toc = np.zeros((LDPC_M, max_deg), dtype=np.float64)
+
+    best_errors = LDPC_M + 1
+    best_bits = np.zeros(LDPC_N, dtype=np.uint8)
+    no_improve = 0
+
+    for _ in range(config.max_iterations):
+        # Hard decision
+        total = llr_174 + tov.sum(axis=1)
+        bits = (total < 0).astype(np.uint8)  # 1 if LLR negative
+        # Check parity
+        errors = 0
+        for r in range(LDPC_M):
+            idxs = Nm[r, : row_deg[r]]
+            if idxs.size == 0:
+                continue
+            parity = np.bitwise_xor.reduce(bits[idxs])
+            if parity != 0:
+                errors += 1
+        if errors < best_errors:
+            best_errors = errors
+            best_bits = bits.copy()
+            no_improve = 0
+        else:
+            no_improve += 1
+        if best_errors == 0 or no_improve >= config.early_stop_no_improve:
+            break
+
+        # Check node update: messages from check r to each connected variable
+        for r in range(LDPC_M):
+            idxs = Nm[r, : row_deg[r]]
+            if idxs.size == 0:
+                continue
+            incoming = np.empty_like(idxs, dtype=np.float64)
+            for i, n in enumerate(idxs):
+                # message to r from n is llr[n] + sum tov[n, other checks]
+                # find position of r in Mn[n]
+                where = np.where(Mn[n] == r)[0]
+                mpos = int(where[0]) if where.size else 0
+                incoming[i] = llr_174[n] + tov[n, (np.arange(3) != mpos)].sum()
+
+            signs = np.sign(incoming)
+            absvals = np.abs(incoming)
+            prod_sign = np.prod(signs) if signs.size > 0 else 1.0
+            min1 = np.min(absvals)
+            for i in range(len(idxs)):
+                s_excl = prod_sign / (signs[i] if signs[i] != 0 else 1.0)
+                new_msg = s_excl * min1
+                if config.damping > 0.0:
+                    toc[r, i] = (1 - config.damping) * new_msg + config.damping * toc[r, i]
+                else:
+                    toc[r, i] = new_msg
+
+        # Variable node update: messages from var n to check m_idx
+        for n in range(LDPC_N):
+            for m_idx in range(3):
+                r = Mn[n, m_idx]
+                if r < 0:
+                    continue
+                # find index j of n in row r
+                ridxs = Nm[r, : row_deg[r]]
+                j = int(np.where(ridxs == n)[0][0])
+                # Sum all check messages to n excluding from r
+                sum_checks = 0.0
+                for j2 in range(row_deg[r]):
+                    if j2 == j:
+                        continue
+                    sum_checks += toc[r, j2]
+                new_val = llr_174[n] + sum_checks
+                if config.damping > 0.0:
+                    tov[n, m_idx] = (1 - config.damping) * new_val + config.damping * tov[n, m_idx]
+                else:
+                    tov[n, m_idx] = new_val
+
+    return best_errors, best_bits
 
 
