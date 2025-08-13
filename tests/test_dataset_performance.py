@@ -96,11 +96,15 @@ def test_dataset_decode_success_rate_and_runtime_distribution(capsys, tmp_path):
         got_msgs = sorted(got_msgs_set)
         total_decoded += len(got_msgs)
 
-        matched = sorted(list(got_msgs_set & expected_set))
+        matched_set = got_msgs_set & expected_set
+        matched = sorted(list(matched_set))
         matched_count = len(matched)
         total_matched += matched_count
 
         expected_sorted = sorted(list(expected_set))
+        expected_not_decoded_set = expected_set - matched_set
+        expected_not_decoded = sorted(list(expected_not_decoded_set))
+
         match_rate_file = (matched_count / len(expected_set)) if len(expected_set) > 0 else 0.0
 
         per_file.append({
@@ -110,7 +114,12 @@ def test_dataset_decode_success_rate_and_runtime_distribution(capsys, tmp_path):
             "decoded_count": len(got_msgs),
             "matched_count": matched_count,
             "match_rate": match_rate_file,
+            # Expected-centric visibility
+            "expected_decoded_success_count": matched_count,
+            "expected_not_decoded_count": len(expected_sorted) - matched_count,
             "expected_messages": expected_sorted,
+            "expected_not_decoded_messages": expected_not_decoded,
+            # Decoded/matched listings for deeper inspection
             "decoded_messages": got_msgs,
             "matched_messages": matched,
         })
@@ -148,6 +157,8 @@ def test_dataset_decode_success_rate_and_runtime_distribution(capsys, tmp_path):
             "total_expected": total_expected,
             "total_decoded": total_decoded,
             "total_matched": total_matched,
+            "total_expected_decoded_success": total_matched,
+            "total_expected_not_decoded": total_expected - total_matched,
             "match_rate": match_rate,
             "runtime_seconds": {
                 "median": median_s,
