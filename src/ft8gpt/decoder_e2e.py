@@ -13,6 +13,7 @@ from .ldpc import min_sum_decode, BeliefPropagationConfig
 from .ldpc_tables import load_parity_from_file
 from .crc import crc14_check
 from .message_decode import unpack_standard_payload
+from .constants import FT8_COSTAS_PATTERN
 
 
 @dataclass(frozen=True)
@@ -31,28 +32,23 @@ def llrs_from_waterfall(wf_group: np.ndarray) -> np.ndarray:
     return np.array(llrs[: 174], dtype=np.float64)
 
 
-def _base_sync_score(wf_mag: np.ndarray, start_symbol: int, base_idx: int) -> float:
-    # wf_mag shape [num_symbols, num_bases, 8]
+def _sync_score_for_base(wf_mag: np.ndarray, start: int, base_idx: int) -> float:
+    # Sum tone energy at Costas pattern positions across three sync blocks
     num_symbols = wf_mag.shape[0]
-    score_sum = 0.0
+    score = 0.0
     count = 0
-    for m in range(3):
+    for block_start in (start, start + 36, start + 72):
         for k in range(LENGTH_SYNC):
-            t = start_symbol + m * SYNC_OFFSET + k
+            t = block_start + k
             if t < 0 or t >= num_symbols:
                 continue
+            tone = FT8_COSTAS_PATTERN[k]
             row = wf_mag[t, base_idx, :]
-            sm = (3, 1, 4, 0, 6, 5, 2)[k]
-            s = row[sm]
-            if sm > 0:
-                score_sum += s - row[sm - 1]
-                count += 1
-            if sm < 7:
-                score_sum += s - row[sm + 1]
-                count += 1
+            score += float(row[tone])
+            count += 1
     if count == 0:
         return -1e9
-    return score_sum / count
+    return score / count
 
 
 def decode_block(samples: np.ndarray, sample_rate_hz: float, parity_path: Path) -> List[CandidateDecode]:
@@ -66,22 +62,16 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float, parity_path: Path) 
     results: List[CandidateDecode] = []
     for h in hits[:6]:
         start = max(0, h.time_symbol)
-        # Compute energy per base across data symbol times
         num_bases = wf.mag.shape[1]
+        # Rank base bins by sync score
+        per_base_scores = np.array([_sync_score_for_base(wf.mag, start, b) for b in range(num_bases)])
+        top_idx = np.argsort(per_base_scores)[-12:][::-1]
+        # Build list of data symbol times (S7 D29 S7 D29 S7)
         data_times = list(range(start + 7, start + 36)) + list(range(start + 43, start + 72))
-        valid_times = [t for t in data_times if 0 <= t < wf.mag.shape[0]]
-        if len(valid_times) < 58:
+        if any(t < 0 or t >= wf.mag.shape[0] for t in data_times):
             continue
-        energy = np.zeros(num_bases, dtype=np.float64)
-        for b in range(num_bases):
-            # sum energy over all tones and all data symbols
-            e = 0.0
-            for t in valid_times:
-                e += float(np.sum(wf.mag[t, b, :]))
-            energy[b] = e
-        top_idx = np.argsort(energy)[-10:][::-1]
         for base_idx in top_idx:
-            symbol_rows = [wf.mag[t, base_idx, :] for t in valid_times]
+            symbol_rows = [wf.mag[t, base_idx, :] for t in data_times]
             wf_group = np.stack(symbol_rows, axis=0)
             llrs = llrs_from_waterfall(wf_group)
             errors, bits = min_sum_decode(llrs, Mn, Nm, config)
