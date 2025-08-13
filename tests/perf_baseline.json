@@ -1,0 +1,5 @@
+{
+  "min_match_rate": 0.0,
+  "max_mean_seconds": 5.0,
+  "max_p95_seconds": 10.0
+}
