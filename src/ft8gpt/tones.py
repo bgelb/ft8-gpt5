@@ -10,6 +10,7 @@ from .constants import FSK_TONES, gray_to_bits
 def extract_symbol_llrs(mag_bins: NDArray[np.float64]) -> Tuple[float, float, float]:
     """Compute unnormalized LLRs (b2,b1,b0) using max-log over Gray-mapped tones.
     mag_bins: shape [8], magnitudes at tone bins in frequency order (tone index == Gray code value).
+    LLR sign convention: positive favors bit=0, negative favors bit=1.
     """
     s = mag_bins
     # Build bit masks once per call (small fixed size of 8)
@@ -29,7 +30,8 @@ def extract_symbol_llrs(mag_bins: NDArray[np.float64]) -> Tuple[float, float, fl
     for i in range(3):
         m1 = max(s[idx] for idx in bit_masks_one[i])
         m0 = max(s[idx] for idx in bit_masks_zero[i])
-        llrs.append(m1 - m0)
+        # Positive favors bit=0
+        llrs.append(m0 - m1)
 
     return float(llrs[0]), float(llrs[1]), float(llrs[2])
 
