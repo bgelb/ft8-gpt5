@@ -34,4 +34,6 @@ def test_e2e_synthetic_strong(tmp_path):
     # Run through public API
     results = decode_wav(str(wav))
     assert isinstance(results, list)
+    # Ensure we successfully decode at least one candidate from the strong synthetic sample
+    assert len(results) > 0
 
