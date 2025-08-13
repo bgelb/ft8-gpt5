@@ -33,22 +33,26 @@ def llrs_from_waterfall(wf_group: np.ndarray) -> np.ndarray:
 
 def decode_block(samples: np.ndarray, sample_rate_hz: float, parity_path: Path) -> List[CandidateDecode]:
     wf = compute_waterfall_symbols(samples, sample_rate_hz, 0, num_symbols=NN)
-    # Collapse base bins by taking max across frequency, simple heuristic for now
-    wf_collapsed = wf.mag.max(axis=1)  # [num_symbols, 8]
-    hits = find_sync_positions(wf_collapsed, min_score=0.0)
+    # Use full base-aware waterfall for sync search to improve accuracy
+    hits = find_sync_positions(wf.mag, min_score=0.0)
     Mn, Nm = load_parity_from_file(parity_path)
 
     config = BeliefPropagationConfig(max_iterations=20, early_stop_no_improve=5)
     results: List[CandidateDecode] = []
     for h in hits[:10]:
         start = max(0, h.time_symbol)
+        base_idx = getattr(h, "base_index", -1)
         # Build data symbol subarray while skipping syncs
         symbol_rows = []
         for k in range(ND):
             sym_idx = start + (k + (7 if k < 29 else 14))
-            if sym_idx < 0 or sym_idx >= wf_collapsed.shape[0]:
+            if sym_idx < 0 or sym_idx >= wf.mag.shape[0]:
                 break
-            symbol_rows.append(wf_collapsed[sym_idx])
+            if 0 <= base_idx < wf.mag.shape[1]:
+                symbol_rows.append(wf.mag[sym_idx, base_idx, :])
+            else:
+                # Fallback: max across bases if base index not available
+                symbol_rows.append(wf.mag[sym_idx].max(axis=0))
         if len(symbol_rows) < ND:
             continue
         llrs = llrs_from_waterfall(np.stack(symbol_rows, axis=0))
