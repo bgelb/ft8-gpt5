@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List
 import numpy as np
 
-from .constants import NN, ND, LENGTH_SYNC, SYNC_OFFSET, FT8_GRAY_MAP
+from .constants import NN, ND, LENGTH_SYNC, SYNC_OFFSET
 from .waterfall import compute_waterfall_symbols
 from .sync import find_sync_positions
 from .tones import extract_symbol_llrs
@@ -23,11 +23,10 @@ class CandidateDecode:
 
 
 def llrs_from_waterfall(wf_group: np.ndarray) -> np.ndarray:
-    # wf_group shape [num_symbols, 8] in tone-index order; reorder to Gray-bit order
+    # wf_group shape [num_symbols, 8]
     llrs: List[float] = []
     for s in range(wf_group.shape[0]):
-        row_gray = wf_group[s][list(FT8_GRAY_MAP)]
-        l0, l1, l2 = extract_symbol_llrs(row_gray)
+        l0, l1, l2 = extract_symbol_llrs(wf_group[s])
         llrs.extend([l0, l1, l2])
     return np.array(llrs[: 174], dtype=np.float64)
 
@@ -63,44 +62,36 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float, parity_path: Path) 
     hits = find_sync_positions(wf_collapsed, min_score=0.0)
     Mn, Nm = load_parity_from_file(parity_path)
 
-    config = BeliefPropagationConfig(max_iterations=20, early_stop_no_improve=5)
+    config = BeliefPropagationConfig(max_iterations=30, early_stop_no_improve=8)
     results: List[CandidateDecode] = []
-    for h in hits[:8]:
+    for h in hits[:6]:
         start = max(0, h.time_symbol)
-        # Rank base bins by sync score
+        # Compute energy per base across data symbol times
         num_bases = wf.mag.shape[1]
-        scores = np.array([_base_sync_score(wf.mag, start, b) for b in range(num_bases)], dtype=np.float64)
-        top_idx = np.argsort(scores)[-8:][::-1]
+        data_times = list(range(start + 7, start + 36)) + list(range(start + 43, start + 72))
+        valid_times = [t for t in data_times if 0 <= t < wf.mag.shape[0]]
+        if len(valid_times) < 58:
+            continue
+        energy = np.zeros(num_bases, dtype=np.float64)
+        for b in range(num_bases):
+            # sum energy over all tones and all data symbols
+            e = 0.0
+            for t in valid_times:
+                e += float(np.sum(wf.mag[t, b, :]))
+            energy[b] = e
+        top_idx = np.argsort(energy)[-10:][::-1]
         for base_idx in top_idx:
-            # Assemble data rows skipping syncs using known layout: S7 D29 S7 D29 S7
-            symbol_rows = []
-            # First D29 starts at 7, second starts at 7+29+7 = 43
-            for k in range(29):
-                t = start + 7 + k
-                if t < 0 or t >= wf.mag.shape[0]:
-                    symbol_rows = []
-                    break
-                symbol_rows.append(wf.mag[t, base_idx, :])
-            if not symbol_rows:
-                continue
-            for k in range(29):
-                t = start + 43 + k
-                if t < 0 or t >= wf.mag.shape[0]:
-                    symbol_rows = []
-                    break
-                symbol_rows.append(wf.mag[t, base_idx, :])
-            if len(symbol_rows) != 58:
-                continue
-            llrs = llrs_from_waterfall(np.stack(symbol_rows, axis=0))
+            symbol_rows = [wf.mag[t, base_idx, :] for t in valid_times]
+            wf_group = np.stack(symbol_rows, axis=0)
+            llrs = llrs_from_waterfall(wf_group)
             errors, bits = min_sum_decode(llrs, Mn, Nm, config)
             payload_with_crc = bits[:91]
             bits_with_crc = np.concatenate([payload_with_crc[:77], payload_with_crc[77:91]])
             if not crc14_check(bits_with_crc):
                 continue
-            # Reject trivial all-zero payloads
-            if np.all(bits_with_crc[:77] == 0):
-                continue
             results.append(CandidateDecode(start_symbol=start, ldpc_errors=errors, bits_with_crc=bits_with_crc))
+            if len(results) >= 10:
+                return results
     return results
 
 
