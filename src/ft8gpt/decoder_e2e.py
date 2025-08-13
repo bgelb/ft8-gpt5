@@ -95,11 +95,13 @@ def _compute_goertzel_group(samples: np.ndarray, fs: float, n_fft: int, start_sy
 def _assemble_llrs_interleaved(mags: np.ndarray, perm: Tuple[int, int, int]) -> np.ndarray:
     """Build length-174 LLR vector in codeword bit order using 3-substream mapping.
     perm maps (b2,b1,b0) indices onto positions [s, s+58, s+116] respectively.
+    Scale LLRs from dB differences to natural log units.
     """
+    DB_TO_LN = np.log(10.0) / 20.0  # convert dB to natural log of amplitude ratio
     llr = np.zeros(174, dtype=np.float64)
     for s in range(min(ND, mags.shape[0])):
         l2, l1, l0 = extract_symbol_llrs(mags[s])
-        triple = (l2, l1, l0)
+        triple = (l2 * DB_TO_LN, l1 * DB_TO_LN, l0 * DB_TO_LN)
         llr[s] = triple[perm[0]]
         llr[s + 58] = triple[perm[1]]
         llr[s + 116] = triple[perm[2]]
@@ -115,9 +117,12 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float, parity_path: Path) 
     # For each base bin, compute sync hits independently and keep top few time candidates
     # Aggregate unique (time_symbol, base_bin) pairs with a composite score
     candidate_list: List[Tuple[int, int, float]] = []  # (time_symbol, base_bin, score)
+    frame_span = (SYNC_OFFSET * 2) + LENGTH_SYNC  # total span of sync blocks ~ 36*2+7 = 79
     for base in range(wf.mag.shape[1]):
         wf_collapsed = wf.mag[:, base, :]  # [num_symbols, 8]
         hits = find_sync_positions(wf_collapsed, min_score=0.0)
+        # Filter to valid start times fully inside buffer
+        hits = [h for h in hits if (h.time_symbol >= 0 and (h.time_symbol + frame_span) <= (wf.mag.shape[0] - 1))]
         top_hits = hits[:5]
         for h in top_hits:
             score = _score_candidate_block(wf, h.time_symbol, base)
