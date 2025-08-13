@@ -13,7 +13,7 @@ if [[ "${1:-}" == "--clean" ]]; then
   exit 0
 fi
 
-# Require Python >=3.11; prefer 3.11 then 3.12 then 3.13 (numba pin incompatible with 3.13)
+# Require Python >=3.11; prefer 3.11 then 3.12 then 3.13
 select_python() {
   for bin in python3.11 python3.12 python3.13; do
     if command -v "$bin" >/dev/null 2>&1; then
