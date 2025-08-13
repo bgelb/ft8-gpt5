@@ -25,9 +25,17 @@ def unpack_standard_payload(a10: bytes) -> DecodedStd:
     # Only support standard calls here
     MAX22 = 4194304
     NTOKENS = 2063592
+
     def unpack28_to_call(n28: int) -> str:
         if n28 < NTOKENS:
-            return "CQ" if n28 == 2 else "<TOK>"
+            if n28 == 2:
+                return "CQ"
+            if n28 == 0:
+                return "DE"
+            if n28 == 1:
+                return "QRZ"
+            # other tokens unsupported in this minimal decoder; treat as empty
+            return ""
         n = n28 - NTOKENS - MAX22
         # decode basecall
         c = [' '] * 6
@@ -39,12 +47,15 @@ def unpack_standard_payload(a10: bytes) -> DecodedStd:
         c[1] = _ch_alphanum(d)
         c[0] = _ch_alphanum_space(n % 37)
         return ''.join(c).strip()
+
     def _ch_alphanum_space(v: int) -> str:
         if v == 36: return ' '
         return _ch_alphanum(v)
+
     def _ch_alphanum(v: int) -> str:
         if v < 26: return chr(ord('A') + v)
         return chr(ord('0') + (v - 26))
+
     def _ch_lspace(v: int) -> str:
         if v == 0: return ' '
         return chr(ord('A') + (v - 1))

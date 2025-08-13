@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List
 import numpy as np
 
-from .constants import NN, ND, LENGTH_SYNC, SYNC_OFFSET
+from .constants import NN, ND, LENGTH_SYNC, SYNC_OFFSET, NUM_SYNC
 from .waterfall import compute_waterfall_symbols
 from .sync import find_sync_positions
 from .tones import extract_symbol_llrs
@@ -31,12 +31,25 @@ def llrs_from_waterfall(wf_group: np.ndarray) -> np.ndarray:
     return np.array(llrs[: 174], dtype=np.float64)
 
 
+def _data_symbol_offsets() -> List[int]:
+    # Compute frame symbol indices [0..NN-1] that carry data (skip sync blocks)
+    sync_idxs = set()
+    for m in range(NUM_SYNC):
+        start = m * SYNC_OFFSET
+        for k in range(LENGTH_SYNC):
+            sync_idxs.add(start + k)
+    return [i for i in range(NN) if i not in sync_idxs]
+
+
 def decode_block(samples: np.ndarray, sample_rate_hz: float, parity_path: Path) -> List[CandidateDecode]:
     wf = compute_waterfall_symbols(samples, sample_rate_hz, 0, num_symbols=NN)
     # Collapse base bins by taking max across frequency, simple heuristic for now
     wf_collapsed = wf.mag.max(axis=1)  # [num_symbols, 8]
     hits = find_sync_positions(wf_collapsed, min_score=0.0)
     Mn, Nm = load_parity_from_file(parity_path)
+
+    data_offsets = _data_symbol_offsets()
+    assert len(data_offsets) == ND
 
     config = BeliefPropagationConfig(max_iterations=20, early_stop_no_improve=5)
     results: List[CandidateDecode] = []
@@ -45,7 +58,7 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float, parity_path: Path) 
         # Build data symbol subarray while skipping syncs
         symbol_rows = []
         for k in range(ND):
-            sym_idx = start + (k + (7 if k < 29 else 14))
+            sym_idx = start + data_offsets[k]
             if sym_idx < 0 or sym_idx >= wf_collapsed.shape[0]:
                 break
             symbol_rows.append(wf_collapsed[sym_idx])
