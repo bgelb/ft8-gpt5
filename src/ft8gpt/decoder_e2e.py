@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Tuple
 import numpy as np
 
-from .constants import NN, ND, LENGTH_SYNC, SYNC_OFFSET
+from .constants import NN, ND, LENGTH_SYNC, SYNC_OFFSET, SYMBOL_PERIOD_S
 from .waterfall import compute_waterfall_symbols, Waterfall
 from .sync import find_sync_positions
 from .tones import extract_symbol_llrs
@@ -107,7 +107,10 @@ def _assemble_llrs_interleaved(mags: np.ndarray, perm: Tuple[int, int, int]) -> 
 
 
 def decode_block(samples: np.ndarray, sample_rate_hz: float, parity_path: Path) -> List[CandidateDecode]:
-    wf = compute_waterfall_symbols(samples, sample_rate_hz, 0, num_symbols=NN)
+    # Compute over the entire buffer so we can slide frame start in symbol steps
+    n_fft = int(round(sample_rate_hz * SYMBOL_PERIOD_S))
+    total_symbols = max(0, samples.size // n_fft)
+    wf = compute_waterfall_symbols(samples, sample_rate_hz, 0, num_symbols=total_symbols)
 
     # For each base bin, compute sync hits independently and keep top few time candidates
     # Aggregate unique (time_symbol, base_bin) pairs with a composite score
@@ -136,7 +139,7 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float, parity_path: Path) 
         (2, 0, 1),
         (2, 1, 0),
     ]
-    for (t0, base, _score) in candidate_list[:40]:
+    for (t0, base, _score) in candidate_list[:80]:
         # Try small fractional offsets around the base frequency using Goertzel magnitudes
         base_freq_hz = base * bin_hz
         for delta_hz in (-3.125, 0.0, 3.125):
