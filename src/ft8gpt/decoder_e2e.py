@@ -24,11 +24,14 @@ class CandidateDecode:
 
 def llrs_from_waterfall(wf_group: np.ndarray) -> np.ndarray:
     # wf_group shape [num_symbols, 8]
-    llrs: List[float] = []
-    for s in range(wf_group.shape[0]):
-        l0, l1, l2 = extract_symbol_llrs(wf_group[s])
-        llrs.extend([l0, l1, l2])
-    return np.array(llrs[: 174], dtype=np.float64)
+    if wf_group.size == 0:
+        return np.zeros(0, dtype=np.float64)
+    s = wf_group
+    llr0 = np.max(s[:, 4:8], axis=1) - np.max(s[:, 0:4], axis=1)
+    llr1 = np.max(s[:, [2, 3, 6, 7]], axis=1) - np.max(s[:, [0, 1, 4, 5]], axis=1)
+    llr2 = np.max(s[:, [1, 3, 5, 7]], axis=1) - np.max(s[:, [0, 2, 4, 6]], axis=1)
+    llrs = np.stack([llr0, llr1, llr2], axis=1).reshape(-1)
+    return llrs[:174].astype(np.float64)
 
 
 def decode_block(samples: np.ndarray, sample_rate_hz: float, parity_path: Path) -> List[CandidateDecode]:
@@ -38,9 +41,9 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float, parity_path: Path) 
     hits = find_sync_positions(wf_collapsed, min_score=0.0)
     Mn, Nm = load_parity_from_file(parity_path)
 
-    config = BeliefPropagationConfig(max_iterations=20, early_stop_no_improve=5)
+    config = BeliefPropagationConfig(max_iterations=12, early_stop_no_improve=3)
     results: List[CandidateDecode] = []
-    for h in hits[:10]:
+    for h in hits[:5]:
         start = max(0, h.time_symbol)
         # Build data symbol subarray while skipping syncs
         symbol_rows = []

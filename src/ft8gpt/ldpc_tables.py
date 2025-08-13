@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import List, Tuple
+from functools import lru_cache
 
 import numpy as np
 
 from .constants import LDPC_N, LDPC_M
 
 
+@lru_cache(maxsize=8)
 def load_parity_from_file(path: Path) -> Tuple[np.ndarray, np.ndarray]:
     """
     Load WSJT-X style parity.dat (83x174) where each of 174 lines lists 3 row indices (1..83)
