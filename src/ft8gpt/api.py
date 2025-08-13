@@ -8,6 +8,8 @@ from pathlib import Path
 
 from .decoder_e2e import decode_block
 from .message_decode import unpack_standard_payload
+from .crc import crc14_check
+
 
 @dataclass(frozen=True)
 class DecodeResult:
@@ -16,6 +18,7 @@ class DecodeResult:
     snr_db: float
     message: str
     crc14_ok: bool
+    ldpc_errors: int
 
 
 def decode_wav(path: str) -> List[DecodeResult]:
@@ -43,7 +46,12 @@ def decode_wav(path: str) -> List[DecodeResult]:
             msg = ""
         results.append(
             DecodeResult(
-                start_time_s=0.0, frequency_hz=0.0, snr_db=0.0, message=msg, crc14_ok=True
+                start_time_s=0.0,
+                frequency_hz=0.0,
+                snr_db=0.0,
+                message=msg,
+                crc14_ok=bool(crc14_check(d.bits_with_crc)),
+                ldpc_errors=int(d.ldpc_errors),
             )
         )
     return results

@@ -43,9 +43,11 @@ def _data_symbol_offsets() -> List[int]:
 
 def decode_block(samples: np.ndarray, sample_rate_hz: float, parity_path: Path) -> List[CandidateDecode]:
     wf = compute_waterfall_symbols(samples, sample_rate_hz, 0, num_symbols=NN)
-    # Collapse base bins by taking max across frequency, simple heuristic for now
+    num_symbols, num_bases, _ = wf.mag.shape
+    # Use collapsed bins for robust sync search
     wf_collapsed = wf.mag.max(axis=1)  # [num_symbols, 8]
     hits = find_sync_positions(wf_collapsed, min_score=0.0)
+
     Mn, Nm = load_parity_from_file(parity_path)
 
     data_offsets = _data_symbol_offsets()
@@ -53,26 +55,27 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float, parity_path: Path) 
 
     config = BeliefPropagationConfig(max_iterations=20, early_stop_no_improve=5)
     results: List[CandidateDecode] = []
-    for h in hits[:10]:
+
+    # Evaluate top few hits; for each, try all base bins
+    for h in hits[:5]:
         start = max(0, h.time_symbol)
-        # Build data symbol subarray while skipping syncs
-        symbol_rows = []
-        for k in range(ND):
-            sym_idx = start + data_offsets[k]
-            if sym_idx < 0 or sym_idx >= wf_collapsed.shape[0]:
-                break
-            symbol_rows.append(wf_collapsed[sym_idx])
-        if len(symbol_rows) < ND:
-            continue
-        llrs = llrs_from_waterfall(np.stack(symbol_rows, axis=0))
-        errors, bits = min_sum_decode(llrs, Mn, Nm, config)
-        # Pack first 91 bits + compute and check CRC
-        payload_with_crc = bits[:91]
-        # Convert to explicit bits array (77 + 14)
-        bits_with_crc = np.concatenate([payload_with_crc[:77], payload_with_crc[77:91]])
-        # Note: crc14_check expects 77+14 MSB-first bits
-        if crc14_check(bits_with_crc):
-            results.append(CandidateDecode(start_symbol=start, ldpc_errors=errors, bits_with_crc=bits_with_crc))
+        for base_idx in range(num_bases):
+            # Build data symbol subarray from this base bin
+            symbol_rows = []
+            for k in range(ND):
+                sym_idx = start + data_offsets[k]
+                if sym_idx < 0 or sym_idx >= num_symbols:
+                    symbol_rows = []
+                    break
+                symbol_rows.append(wf.mag[sym_idx, base_idx, :])
+            if len(symbol_rows) < ND:
+                continue
+            llrs = llrs_from_waterfall(np.stack(symbol_rows, axis=0))
+            errors, bits = min_sum_decode(llrs, Mn, Nm, config)
+            payload_with_crc = bits[:91]
+            bits_with_crc = np.concatenate([payload_with_crc[:77], payload_with_crc[77:91]])
+            if crc14_check(bits_with_crc):
+                results.append(CandidateDecode(start_symbol=start, ldpc_errors=errors, bits_with_crc=bits_with_crc))
     return results
 
 
