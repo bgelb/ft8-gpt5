@@ -14,7 +14,7 @@ A from-scratch FT8 decoder library with tests and benchmarks.
 - Refinement: fractional frequency via Goertzel bank centered at 6.25 Hz spacing.
 - LLR + LDPC: Gray-map LLRs; min-sum LDPC (174,91) with damping/scaling and sparse structures.
 - CRC + Message: CRC-14 check; message unpack to human-readable text (standard and selected non-standard forms).
-- API: `ft8gpt.api.decode_wav(path)` returns `DecodeResult` records with integrity flags.
+- API: `ft8gpt.api.decode_wav(path_or_file)` returns `DecodeResult` records with integrity flags.
 
 ## Requirements
 - Python 3.11+ (3.13 recommended on macOS).
