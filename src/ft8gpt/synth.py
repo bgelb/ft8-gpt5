@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import numpy as np
+import math
 
 from .constants import SYMBOL_PERIOD_S, NN, LENGTH_SYNC, SYNC_OFFSET, FT8_COSTAS_PATTERN, FT8_GRAY_MAP, FSK_TONES, TONE_SPACING_HZ
 
@@ -30,17 +31,46 @@ def tones_from_codeword(codeword_bits: np.ndarray) -> np.ndarray:
 
 
 def synthesize_ft8_audio(tones: np.ndarray, sample_rate_hz: float, base_freq_hz: float = 1000.0) -> np.ndarray:
-    """Synthesize baseband FT8 audio for a single transmission."""
+    """Synthesize FT8 audio using GFSK-like phase shaping for spectral compliance.
+
+    Matches the reference's smoothed FM approach sufficiently for decoding tests.
+    """
     symbol_samples = int(round(sample_rate_hz * SYMBOL_PERIOD_S))
     n = symbol_samples * NN
-    t = np.arange(n) / sample_rate_hz
+    # Precompute Gaussian pulse (BT≈2.0 as in reference)
+    bt = 2.0
+    K = np.pi * np.sqrt(2.0 / np.log(2.0))
+    def gfsk_pulse(idx):
+        t = idx / float(symbol_samples) - 1.5
+        arg1 = K * bt * (t + 0.5)
+        arg2 = K * bt * (t - 0.5)
+        return (math.erf(arg1) - math.erf(arg2)) * 0.5
+
+    pulse = np.array([gfsk_pulse(i) for i in range(3 * symbol_samples)], dtype=np.float64)
+
+    # Frequency increment per sample
+    dphi_peak = 2 * np.pi / symbol_samples
+    dphi = np.full(n + 2 * symbol_samples, 2 * np.pi * base_freq_hz / sample_rate_hz, dtype=np.float64)
+    for i in range(NN):
+        ib = i * symbol_samples
+        dphi[ib:ib + 3 * symbol_samples] += dphi_peak * tones[i] * pulse
+    # Extend edges with first and last tones
+    dphi[:2 * symbol_samples] += dphi_peak * pulse[symbol_samples:] * tones[0]
+    dphi[NN * symbol_samples:NN * symbol_samples + 2 * symbol_samples] += dphi_peak * pulse[:2 * symbol_samples] * tones[-1]
+
+    # Integrate phase and synthesize
     x = np.zeros(n, dtype=np.float64)
-    for s in range(NN):
-        f = base_freq_hz + tones[s] * TONE_SPACING_HZ
-        start = s * symbol_samples
-        end = start + symbol_samples
-        # simple phase-continuous synthesis by resetting phase per symbol is acceptable for strong-signal test
-        x[start:end] = np.sin(2 * np.pi * f * t[start:end])
+    phi = 0.0
+    for k in range(n):
+        x[k] = np.sin(phi)
+        phi = (phi + dphi[k + symbol_samples]) % (2 * np.pi)
+
+    # Apply gentle ramp at start/end
+    ramp = symbol_samples // 8
+    win = 0.5 * (1 - np.cos(2 * np.pi * np.arange(ramp) / (2 * ramp)))
+    x[:ramp] *= win
+    x[-ramp:] *= win[::-1]
+
     # Normalize
     x /= np.max(np.abs(x)) + 1e-12
     return x.astype(np.float32)

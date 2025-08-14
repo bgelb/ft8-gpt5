@@ -11,7 +11,8 @@ from .constants import SYMBOL_PERIOD_S, NN, FSK_TONES
 @dataclass(frozen=True)
 class Waterfall:
     # magnitudes per [symbol, base_bin, tone]
-    mag: NDArray[np.float64]  # shape [num_symbols, num_bases, 8]
+    mag: NDArray[np.float64]       # shape [num_symbols, num_bases, 8] at integer bin alignment
+    mag_half: NDArray[np.float64]  # shape [num_symbols, num_bases-1, 8] at +0.5 bin alignment (approx)
     sample_rate_hz: float
     n_fft: int
     base_bin0_hz: float
@@ -42,7 +43,9 @@ def compute_waterfall_symbols(signal: NDArray[np.float64], sample_rate_hz: float
 
     mags = np.abs(spectra).astype(np.float64)
     mags = np.maximum(mags, 1e-12)
-    # Convert to log magnitude for robustness
+    # Apply simple noise floor normalization per symbol for better discrimination
+    med = np.median(mags, axis=1, keepdims=True)
+    mags = np.maximum(mags - med, 1e-12)
     mags_db = 20.0 * np.log10(mags)
 
     # Construct base bins (k0..k0+7 must be in range)
@@ -52,7 +55,17 @@ def compute_waterfall_symbols(signal: NDArray[np.float64], sample_rate_hz: float
     for k0 in range(num_bases):
         wf[:, k0, :] = mags_db[:, k0:k0 + FSK_TONES]
 
+    # Approximate +0.5-bin alignment using adjacent-bin averaging in linear power domain before converting back to dB
+    # Convert mags_db back to linear power for interpolation
+    pwr = 10.0 ** (mags_db / 10.0)
+    num_bases_half = max(0, num_bins - (FSK_TONES + 1))
+    wf_half = np.empty((num_symbols, num_bases_half, FSK_TONES), dtype=np.float64)
+    for k0 in range(num_bases_half):
+        # half-step group spans bins [k0+0.5 ... k0+7.5]
+        interp = 0.5 * (pwr[:, k0:k0 + FSK_TONES] + pwr[:, k0 + 1:k0 + 1 + FSK_TONES])
+        wf_half[:, k0, :] = 10.0 * np.log10(np.maximum(interp, 1e-20))
+
     base_bin0_hz = 0.0  # rfft bin 0
-    return Waterfall(mag=wf, sample_rate_hz=sample_rate_hz, n_fft=n_fft, base_bin0_hz=base_bin0_hz)
+    return Waterfall(mag=wf, mag_half=wf_half, sample_rate_hz=sample_rate_hz, n_fft=n_fft, base_bin0_hz=base_bin0_hz)
 
 

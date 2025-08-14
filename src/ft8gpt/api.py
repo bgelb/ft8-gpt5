@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import List
 import numpy as np
 import soundfile as sf
-from pathlib import Path
 
 from .decoder_e2e import decode_block
 from .message_decode import unpack_standard_payload
@@ -30,9 +29,8 @@ def decode_wav(path: str) -> List[DecodeResult]:
     samples, sample_rate_hz = sf.read(path, always_2d=False)
     x = samples[:, 0] if getattr(samples, "ndim", 1) > 1 else samples
     x = np.asarray(x, dtype=np.float64)
-    # Run a basic pipeline using reference parity table
-    parity = Path(__file__).resolve().parents[2] / "external" / "ft8_lib" / "ft4_ft8_public" / "parity.dat"
-    decs = decode_block(x, float(sample_rate_hz), parity)
+    # Run a basic pipeline using embedded parity tables
+    decs = decode_block(x, float(sample_rate_hz))
     results: List[DecodeResult] = []
     for d in decs:
         # Reconstruct payload bytes (first 77 bits) and attempt to unpack as standard

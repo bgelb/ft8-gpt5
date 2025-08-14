@@ -1,10 +1,9 @@
 import numpy as np
-from pathlib import Path
 import soundfile as sf
 
 from ft8gpt.ft8pack import pack_standard_payload
 from ft8gpt.crc import crc14
-from ft8gpt.ldpc_encode import load_generator_from_file, encode174_bits
+from ft8gpt.ldpc_encode import encode174_bits_systematic
 from ft8gpt.synth import tones_from_codeword, synthesize_ft8_audio
 from ft8gpt.decoder_e2e import decode_block
 from ft8gpt.api import decode_wav
@@ -20,9 +19,7 @@ def test_e2e_synthetic_strong(tmp_path):
     a91 = np.concatenate([bits77, crc_bits])
 
     # LDPC encode using generator
-    gen_path = Path(__file__).resolve().parents[1] / "external" / "ft8_lib" / "ft4_ft8_public" / "generator.dat"
-    G = load_generator_from_file(gen_path)
-    codeword = encode174_bits(a91, G)
+    codeword = encode174_bits_systematic(a91)
 
     tones = tones_from_codeword(codeword)
     sr = 12000.0
@@ -30,7 +27,6 @@ def test_e2e_synthetic_strong(tmp_path):
     wav = tmp_path / "strong.wav"
     sf.write(str(wav), x, int(sr))
 
-    parity = Path(__file__).resolve().parents[1] / "external" / "ft8_lib" / "ft4_ft8_public" / "parity.dat"
     # Run through public API
     results = decode_wav(str(wav))
     assert isinstance(results, list)

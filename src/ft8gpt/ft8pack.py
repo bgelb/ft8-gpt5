@@ -37,19 +37,21 @@ def pack_basecall(callsign: str) -> int:
         return -1
 
     def nchar_alphanum_space(ch: str) -> int:
+        # Spec mapping: 0=' ', 1..10='0'..'9', 11..36='A'..'Z'
         if ch == ' ':
-            return 36
+            return 0
         if _is_digit(ch):
-            return ord(ch) - ord('0') + 26
+            return 1 + (ord(ch) - ord('0'))
         if _is_letter(ch):
-            return ord(ch) - ord('A')
+            return 11 + (ord(ch) - ord('A'))
         return -1
 
     def nchar_alphanum(ch: str) -> int:
+        # Spec mapping: 0..9='0'..'9', 10..35='A'..'Z'
         if _is_digit(ch):
-            return ord(ch) - ord('0') + 26
+            return ord(ch) - ord('0')
         if _is_letter(ch):
-            return ord(ch) - ord('A')
+            return 10 + (ord(ch) - ord('A'))
         return -1
 
     def nchar_numeric(ch: str) -> int:
@@ -58,10 +60,11 @@ def pack_basecall(callsign: str) -> int:
         return -1
 
     def nchar_letters_space(ch: str) -> int:
+        # Spec mapping: 0=' ', 1..26='A'..'Z'
         if ch == ' ':
             return 0
         if _is_letter(ch):
-            return (ord(ch) - ord('A')) + 1
+            return 1 + (ord(ch) - ord('A'))
         return -1
 
     i0 = nchar_alphanum_space(c6[0])

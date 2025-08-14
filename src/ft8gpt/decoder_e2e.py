@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import List
 import numpy as np
 
-from .constants import NN, ND, LENGTH_SYNC, SYNC_OFFSET
+from .constants import NN, ND, LENGTH_SYNC, SYNC_OFFSET, SYMBOL_PERIOD_S, NUM_SYNC
 from .waterfall import compute_waterfall_symbols
 from .sync import find_sync_positions
 from .tones import extract_symbol_llrs
 from .ldpc import min_sum_decode, BeliefPropagationConfig
-from .ldpc_tables import load_parity_from_file
+from .ldpc_tables_embedded import get_parity_matrices
 from .crc import crc14_check
 from .message_decode import unpack_standard_payload
 from .constants import FT8_COSTAS_PATTERN
@@ -51,37 +50,59 @@ def _sync_score_for_base(wf_mag: np.ndarray, start: int, base_idx: int) -> float
     return score / count
 
 
-def decode_block(samples: np.ndarray, sample_rate_hz: float, parity_path: Path) -> List[CandidateDecode]:
-    wf = compute_waterfall_symbols(samples, sample_rate_hz, 0, num_symbols=NN)
-    # Collapse base bins for sync search
-    wf_collapsed = wf.mag.max(axis=1)  # [num_symbols, 8]
-    hits = find_sync_positions(wf_collapsed, min_score=0.0)
-    Mn, Nm = load_parity_from_file(parity_path)
+def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDecode]:
+    # Analyze the entire buffer at several fractional symbol alignments
+    n_fft = int(round(sample_rate_hz * SYMBOL_PERIOD_S))
+    if n_fft <= 0:
+        return []
 
+    Mn, Nm = get_parity_matrices()
     config = BeliefPropagationConfig(max_iterations=30, early_stop_no_improve=8)
+
     results: List[CandidateDecode] = []
-    for h in hits[:6]:
-        start = max(0, h.time_symbol)
-        num_bases = wf.mag.shape[1]
-        # Rank base bins by sync score
-        per_base_scores = np.array([_sync_score_for_base(wf.mag, start, b) for b in range(num_bases)])
-        top_idx = np.argsort(per_base_scores)[-12:][::-1]
-        # Build list of data symbol times (S7 D29 S7 D29 S7)
-        data_times = list(range(start + 7, start + 36)) + list(range(start + 43, start + 72))
-        if any(t < 0 or t >= wf.mag.shape[0] for t in data_times):
+    # Coarse timing sweep: 8 phases across one symbol
+    step = max(1, n_fft // 8)
+    for start_sample in range(0, min(n_fft, samples.size), step):
+        total_symbols = max(0, int((samples.size - start_sample) // n_fft))
+        if total_symbols < 79:
             continue
-        for base_idx in top_idx:
-            symbol_rows = [wf.mag[t, base_idx, :] for t in data_times]
-            wf_group = np.stack(symbol_rows, axis=0)
-            llrs = llrs_from_waterfall(wf_group)
-            errors, bits = min_sum_decode(llrs, Mn, Nm, config)
-            payload_with_crc = bits[:91]
-            bits_with_crc = np.concatenate([payload_with_crc[:77], payload_with_crc[77:91]])
-            if not crc14_check(bits_with_crc):
+        wf = compute_waterfall_symbols(samples, sample_rate_hz, start_sample, num_symbols=total_symbols)
+        num_symbols, num_bases, _ = wf.mag.shape
+        window_len = LENGTH_SYNC + (NUM_SYNC - 1) * SYNC_OFFSET
+        t_min = 0
+        t_max = max(0, num_symbols - window_len)
+
+        candidate_list: list[tuple[float, int, int]] = []  # (score, t, base_idx)
+        for t in range(t_min, t_max + 1):
+            for base_idx in range(num_bases):
+                s = _sync_score_for_base(wf.mag, t, int(base_idx))
+                candidate_list.append((s, t, int(base_idx)))
+
+        candidate_list.sort(key=lambda x: x[0], reverse=True)
+        candidate_list = candidate_list[:300]
+
+        for score, start, base_idx in candidate_list:
+            data_times = list(range(start + 7, start + 36)) + list(range(start + 43, start + 72))
+            valid_times = [t for t in data_times if 0 <= t < num_symbols]
+            if len(valid_times) < 58:
                 continue
-            results.append(CandidateDecode(start_symbol=start, ldpc_errors=errors, bits_with_crc=bits_with_crc))
-            if len(results) >= 10:
-                return results
+            # Try both integer-bin and +0.5-bin alignments
+            for mag_cube in (wf.mag, wf.mag_half):
+                if base_idx >= mag_cube.shape[1]:
+                    continue
+                symbol_rows = [mag_cube[t, base_idx, :] for t in valid_times]
+                wf_group = np.stack(symbol_rows, axis=0)
+                llrs = llrs_from_waterfall(wf_group)
+                errors, bits = min_sum_decode(llrs, Mn, Nm, config)
+                payload_with_crc = bits[:91]
+                bits_with_crc = np.concatenate([payload_with_crc[:77], payload_with_crc[77:91]])
+                if not crc14_check(bits_with_crc):
+                    continue
+                results.append(
+                    CandidateDecode(start_symbol=start, ldpc_errors=errors, bits_with_crc=bits_with_crc)
+                )
+                if len(results) >= 10:
+                    return results
     return results
 
 
