@@ -21,7 +21,7 @@ def test_minimal_dataset_available():
 
 
 @pytest.mark.regression
-def test_decode_one_strong_sample_runtime(benchmark):
+def test_decode_one_strong_sample_runtime():
     # Pick a likely-strong sample file; fall back to skip if not present
     if not DATASET_DIR.exists():
         pytest.skip("dataset not available")
@@ -30,10 +30,7 @@ def test_decode_one_strong_sample_runtime(benchmark):
         pytest.skip("no wav files found")
     wav_path = str(candidates[0])
 
-    def run_decode():
-        return decode_wav(wav_path)
-
-    results = benchmark(run_decode)
+    results = decode_wav(wav_path)
     assert isinstance(results, list)
     # Not asserting decode counts yet; baseline ensures non-regression in crash/runtimes
 

@@ -6,7 +6,6 @@ import numpy as np
 
 from .constants import NN, ND, LENGTH_SYNC, SYNC_OFFSET, SYMBOL_PERIOD_S, NUM_SYNC
 from .waterfall import compute_waterfall_symbols
-from .sync import find_sync_positions
 from .tones import extract_symbol_llrs
 from .ldpc import min_sum_decode, BeliefPropagationConfig
 from .ldpc_tables_embedded import get_parity_matrices
@@ -51,7 +50,7 @@ def _sync_score_for_base(wf_mag: np.ndarray, start: int, base_idx: int) -> float
 
 
 def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDecode]:
-    # Analyze the entire buffer at several fractional symbol alignments
+    # Analyze the entire buffer at several fractional symbol alignments using STFT waterfall
     n_fft = int(round(sample_rate_hz * SYMBOL_PERIOD_S))
     if n_fft <= 0:
         return []
