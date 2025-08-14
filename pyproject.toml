@@ -20,7 +20,7 @@ dependencies = [
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-addopts = "-m 'not slow'"
+addopts = "-n auto -m 'not slow'"
 markers = [
   "slow: long-running tests",
   "regression: dataset regression tests",
