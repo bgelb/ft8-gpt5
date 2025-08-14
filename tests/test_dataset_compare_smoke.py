@@ -43,4 +43,3 @@ def test_dataset_compare_smoke():
         got_msgs = {normalize_msg(r.message) for r in got if r.message}
         # Not asserting rate yet; ensure we at least produce a set and don't crash
         assert isinstance(got, list)
-
