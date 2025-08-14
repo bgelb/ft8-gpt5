@@ -48,7 +48,7 @@ jobs:
           name: ${{ runner.os }}-test-reports
           path: reports
       - name: Publish unit test results
-        if: always()
+        if: always() && runner.os == 'Linux'
         uses: EnricoMi/publish-unit-test-result-action@v2
         with:
           files: reports/junit.xml
