@@ -37,15 +37,15 @@ def costas_score(waterfall: NDArray[np.float64], time_symbol: int) -> float:
                 score_sum += s - row[sm + 1]
                 count += 1
     if count == 0:
-        return 0.0
-    return score_sum / count
+        return -1e9
+    return score_sum / max(1, count)
 
 
 def find_sync_positions(waterfall: NDArray[np.float64], min_score: float = 0.0) -> List[SyncHit]:
     hits: List[SyncHit] = []
     num_symbols = waterfall.shape[0]
     # Search a plausible window; here scan broadly
-    for t in range(-10, num_symbols - (LENGTH_SYNC + (NUM_SYNC - 1) * SYNC_OFFSET) + 10):
+    for t in range(0, max(0, num_symbols - (LENGTH_SYNC + (NUM_SYNC - 1) * SYNC_OFFSET)) + 1):
         s = costas_score(waterfall, t)
         if s >= min_score:
             hits.append(SyncHit(time_symbol=t, score=s))

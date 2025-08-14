@@ -27,3 +27,11 @@
 - Write tests alongside code; default suite should be fast; mark long dataset tests as `slow`.
 - Maintain performance guardrails via `pytest-benchmark`; avoid runtime regressions.
 - Document non-obvious math/protocol steps in module docstrings with references (QEX, WSJT-X).
+
+# Cursor Agents Guidelines for This Repo
+
+- Prefer small Python one-liners or base64 decode in a single command instead of complex nested quoting.
+- Do not introduce external service calls without explicit approval.
+- Keep CI fast; mark long-running tests with `@pytest.mark.slow` and exclude by default.
+- Use only the `external/ft8_lib/test/wav` dataset files (.wav and .txt) for tests. Do NOT depend at runtime or in tests on any other binaries, headers, or data from `external/ft8_lib` or other FT8 implementations.
+- With the sole exception of using the sample `.wav` and `.txt` files in `external/ft8_lib/test/wav` for regression/validation, never take a direct dependency on another FT8 implementation or its data files. Embed any required small tables directly in this repository.

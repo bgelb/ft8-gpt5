@@ -1,6 +1,5 @@
 import numpy as np
 import soundfile as sf
-from pathlib import Path
 
 from ft8gpt.decoder_e2e import decode_block
 
@@ -12,8 +11,7 @@ def test_e2e_strong_synthetic(tmp_path):
     wav = tmp_path / "silence.wav"
     sf.write(str(wav), x, sr)
 
-    parity = Path(__file__).resolve().parents[1] / "external" / "ft8_lib" / "ft4_ft8_public" / "parity.dat"
-    results = decode_block(x, float(sr), parity)
+    results = decode_block(x, float(sr))
     # No decodes on silence, but pipeline should run without error
     assert isinstance(results, list)
 
