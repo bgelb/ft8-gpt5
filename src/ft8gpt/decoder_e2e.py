@@ -22,6 +22,8 @@ from .ldpc_tables_embedded import get_parity_matrices
 from .crc import crc14_check
 from .message_decode import unpack_standard_payload
 from scipy.signal import decimate, get_window
+from .sync import find_sync_candidates_stft
+from .ldpc_encode import get_encoder_structures
 
 
 @dataclass(frozen=True)
@@ -36,7 +38,8 @@ def llrs_from_waterfall(wf_group: np.ndarray) -> np.ndarray:
     llrs: List[float] = []
     for s in range(wf_group.shape[0]):
         l0, l1, l2 = extract_symbol_llrs(wf_group[s])
-        llrs.extend([l0, l1, l2])
+        # Encoder packs bits per symbol as (b2,b1,b0); order LLRs accordingly
+        llrs.extend([l2, l1, l0])
     return np.array(llrs[: 174], dtype=np.float64)
 
 
@@ -226,7 +229,7 @@ def _sync_score_for_base(wf_mag: np.ndarray, start: int, base_idx: int) -> float
 
 
 def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDecode]:
-    # Analyze the entire buffer at several fractional symbol alignments using STFT waterfall
+    # Analyze the entire buffer using STFT-based Costas matched filter to find coarse candidates
     n_fft = int(round(sample_rate_hz * SYMBOL_PERIOD_S))
     if n_fft <= 0:
         return []
@@ -236,91 +239,78 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDe
     config = BeliefPropagationConfig(max_iterations=50, early_stop_no_improve=15)
 
     results: List[CandidateDecode] = []
-    # Coarse timing sweep: 8 phases across one symbol
-    step = max(1, n_fft // 8)
-    for start_sample in range(0, min(n_fft, samples.size), step):
-        total_symbols = max(0, int((samples.size - start_sample) // n_fft))
-        if total_symbols < 79:
+
+    # Run STFT-based candidate search across the whole buffer
+    candidates, stft_nfft, hop = find_sync_candidates_stft(samples, sample_rate_hz, top_k=200)
+
+    # Process top candidates with fine refinement and coherent demod
+    for cand in candidates:
+        # Coarse absolute sample index corresponding to the first Costas symbol
+        coarse_abs_start = cand.frame_start * hop
+        if coarse_abs_start < 0:
             continue
-        wf = compute_waterfall_symbols(samples, sample_rate_hz, start_sample, num_symbols=total_symbols)
-        num_symbols, num_bases, _ = wf.mag.shape
-        window_len = LENGTH_SYNC + (NUM_SYNC - 1) * SYNC_OFFSET
-        t_min = 0
-        t_max = max(0, num_symbols - window_len)
 
-        candidate_list: list[tuple[float, int, int]] = []  # (score, t, base_idx)
-        for t in range(t_min, t_max + 1):
-            for base_idx in range(num_bases):
-                s = _sync_score_for_base(wf.mag, t, int(base_idx))
-                candidate_list.append((s, t, int(base_idx)))
+        # Bin spacing and base frequency for both frac hypotheses (cand.frac is already 0.0 or 0.5)
+        bin_hz = sample_rate_hz / stft_nfft if stft_nfft > 0 else TONE_SPACING_HZ
+        base_idx = int(cand.base_bin)
+        frac = float(cand.frac)
+        base_freq_hz = (base_idx + frac) * bin_hz
 
-        candidate_list.sort(key=lambda x: x[0], reverse=True)
-        candidate_list = candidate_list[:150]
+        # Refine time and frequency via Costas correlation at 200 Hz
+        best_off_2, df_hz, corr_score = refine_sync_fine(
+            samples, sample_rate_hz, base_freq_hz, coarse_abs_start
+        )
 
-        # Process top candidates with fine refinement and coherent demod
-        for score, start, base_idx in candidate_list:
-            # Compute absolute sample index at coarse start symbol
-            n_fft = int(round(sample_rate_hz * SYMBOL_PERIOD_S))
-            coarse_abs_start = start_sample + start * n_fft
-            if coarse_abs_start < 0:
-                continue
+        # Downmix/decimate once more to reuse in demod
+        decim = max(1, int(round(sample_rate_hz / 200.0)))
+        y2, fs2 = _downmix_and_decimate(samples, sample_rate_hz, base_freq_hz, decim)
+        sym_len2 = int(round(SYMBOL_PERIOD_S * fs2))
+        pos0_2 = int(round(coarse_abs_start / decim)) + best_off_2
+        if sym_len2 <= 0:
+            continue
 
-            # Bin spacing and base frequency for both frac hypotheses
-            bin_hz = sample_rate_hz / n_fft if n_fft > 0 else TONE_SPACING_HZ
-            for frac in (0.0, 0.5):
-                base_freq_hz = (base_idx + frac) * bin_hz
+        # Build symbol index lists
+        sync_times = (
+            list(range(0, 7)) +
+            list(range(36, 43)) +
+            list(range(72, 79))
+        )
+        # Use times RELATIVE to candidate start for coherent demod
+        data_times_rel = list(range(7, 36)) + list(range(43, 72))
 
-                # Refine time and frequency via Costas correlation at 200 Hz
-                best_off_2, df_hz, corr_score = refine_sync_fine(
-                    samples, sample_rate_hz, base_freq_hz, coarse_abs_start
-                )
+        # Evaluate Costas match quality gate
+        # Compute sync energies at refined alignment
+        sync_E = coherent_symbol_energies(y2, fs2, pos0_2, df_hz, sync_times)
+        if sync_E.shape[0] != 21:
+            continue
+        # Require a strong Costas lock for proceeding (strong synthetic should easily satisfy)
+        if count_costas_matches(sync_E) < 18:
+            continue
 
-                # Downmix/decimate once more to reuse in demod
-                decim = max(1, int(round(sample_rate_hz / 200.0)))
-                y2, fs2 = _downmix_and_decimate(samples, sample_rate_hz, base_freq_hz, decim)
-                sym_len2 = int(round(SYMBOL_PERIOD_S * fs2))
-                pos0_2 = int(round(coarse_abs_start / decim)) + best_off_2
-                if sym_len2 <= 0:
-                    continue
+        # Coherent demod for data symbols
+        E = coherent_symbol_energies(y2, fs2, pos0_2, df_hz, data_times_rel)
+        # Convert linear energies to LLRs via Gray group log-sum ratios
+        llrs: List[float] = []
+        for row in E:
+            l2, l1, l0 = _llrs_from_linear_energies_gray_groups(row)
+            # Pack LLRs per symbol in (b2,b1,b0) order to match encoder/systematic mapping
+            llrs.extend([l2, l1, l0])
+        llrs_arr = np.array(llrs[:174], dtype=np.float64)
+        # Empirical scaling for improved LDPC convergence with coherent LLRs
+        llrs_arr *= 2.5
 
-                # Build symbol index lists
-                sync_times = (
-                    list(range(0, 7)) +
-                    list(range(36, 43)) +
-                    list(range(72, 79))
-                )
-                # Use times RELATIVE to candidate start for coherent demod
-                data_times_rel = list(range(7, 36)) + list(range(43, 72))
-
-                # Evaluate Costas match quality gate
-                # Compute sync energies at refined alignment
-                sync_E = coherent_symbol_energies(y2, fs2, pos0_2, df_hz, sync_times)
-                if sync_E.shape[0] != 21:
-                    continue
-                # Allow a low threshold; LDPC+CRC will validate true decodes
-                if count_costas_matches(sync_E) < 3:
-                    continue
-
-                # Coherent demod for data symbols
-                E = coherent_symbol_energies(y2, fs2, pos0_2, df_hz, data_times_rel)
-                # Convert linear energies to LLRs via Gray group log-sum ratios
-                llrs: List[float] = []
-                for row in E:
-                    l2, l1, l0 = _llrs_from_linear_energies_gray_groups(row)
-                    # Maintain order (b0,b1,b2) in stream as before
-                    llrs.extend([l0, l1, l2])
-                llrs_arr = np.array(llrs[:174], dtype=np.float64)
-
-                errors, bits = min_sum_decode(llrs_arr, Mn, Nm, config)
-                payload_with_crc = bits[:91]
-                bits_with_crc = np.concatenate([payload_with_crc[:77], payload_with_crc[77:91]])
-                if not crc14_check(bits_with_crc):
-                    continue
-                results.append(
-                    CandidateDecode(start_symbol=start, ldpc_errors=errors, bits_with_crc=bits_with_crc)
-                )
-                if len(results) >= 10:
-                    return results
+        errors, bits = min_sum_decode(llrs_arr, Mn, Nm, config)
+        # Map hard decision codeword back to systematic payload+CRC positions
+        Br_inv, Hrest, rest_cols, piv_cols = get_encoder_structures()
+        a91 = bits[np.array(rest_cols, dtype=np.int64)]
+        bits_with_crc = np.concatenate([a91[:77], a91[77:91]])
+        if not crc14_check(bits_with_crc):
+            continue
+        results.append(
+            CandidateDecode(start_symbol=0, ldpc_errors=errors, bits_with_crc=bits_with_crc)
+        )
+        if len(results) >= 10:
+            return results
     return results
 
 
