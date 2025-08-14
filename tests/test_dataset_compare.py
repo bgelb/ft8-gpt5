@@ -1,6 +1,7 @@
 from pathlib import Path
 import re
 import numpy as np
+import pytest
 
 from ft8gpt import decode_wav
 
@@ -29,6 +30,7 @@ def normalize_msg(s: str) -> str:
     return re.sub(r"\s+", " ", s.strip().upper())
 
 
+@pytest.mark.slow
 def test_dataset_compare_smoke():
     dataset = Path(__file__).resolve().parents[1] / "external" / "ft8_lib" / "test" / "wav"
     if not dataset.exists():
