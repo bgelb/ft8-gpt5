@@ -30,19 +30,23 @@ LDPC_M = 83
 # CRC-14
 CRC14_POLY = 0x2757
 
-# Costas 7x7 sync tone pattern and Gray map (tones -> bits)
+# Costas 7x7 sync tone pattern and Gray map (bits -> tone index)
 # These small tables are public and protocol-defined.
 FT8_COSTAS_PATTERN = (3, 1, 4, 0, 6, 5, 2)
 FT8_GRAY_MAP = (0, 1, 3, 2, 5, 6, 4, 7)
 
+# Precompute inverse mapping from tone index -> 3-bit binary index (b2b1b0 as integer 0..7)
+_FT8_INV_GRAY_MAP = tuple(int(i) for i, tone in sorted([(i, t) for i, t in enumerate(FT8_GRAY_MAP)], key=lambda x: x[1]))
+
 
 def gray_to_bits(gray_symbol: int) -> tuple[int, int, int]:
-    """Return the three bits (b2,b1,b0) corresponding to a Gray-coded tone index."""
-    # Inverse of Gray coding: binary b from gray g via iterative XOR
-    b = gray_symbol & 7
-    b ^= (b >> 1)
-    b ^= (b >> 2)
-    return (b >> 2) & 1, (b >> 1) & 1, b & 1
+    """Return (b2,b1,b0) for the FT8-specific Gray map given a tone index 0..7.
+
+    Note: FT8 uses a non-standard Gray ordering; do NOT use the generic XOR inverse.
+    """
+    g = gray_symbol & 7
+    idx = _FT8_INV_GRAY_MAP[g]
+    return (idx >> 2) & 1, (idx >> 1) & 1, idx & 1
 
 
 def bits_to_gray(b2: int, b1: int, b0: int) -> int:
