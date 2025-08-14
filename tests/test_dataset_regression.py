@@ -12,7 +12,6 @@ DATASET_DIR = Path(__file__).resolve().parent.parent / "external" / "ft8_lib" / 
 
 
 @pytest.mark.regression
-@pytest.mark.slow
 def test_minimal_dataset_available():
     # Ensure dataset exists and has at least a few wavs
     if not DATASET_DIR.exists():
