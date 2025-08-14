@@ -33,6 +33,23 @@ def min_sum_decode(
     max_deg = Nm.shape[1]
     toc = np.zeros((LDPC_M, max_deg), dtype=np.float64)
 
+    # Precompute fast lookups:
+    # mpos_lookup[n, r] = position index 0..2 of check r in Mn[n]
+    mpos_lookup = np.full((LDPC_N, LDPC_M), -1, dtype=np.int8)
+    for n in range(LDPC_N):
+        for m_idx in range(3):
+            r = int(Mn[n, m_idx])
+            if r >= 0:
+                mpos_lookup[n, r] = np.int8(m_idx)
+    # var_index_in_row[r, n] = j such that Nm[r, j] == n
+    var_index_in_row = np.full((LDPC_M, LDPC_N), -1, dtype=np.int16)
+    for r in range(LDPC_M):
+        deg = int(row_deg[r])
+        for j in range(deg):
+            n = int(Nm[r, j])
+            if n >= 0:
+                var_index_in_row[r, n] = np.int16(j)
+
     best_errors = LDPC_M + 1
     best_bits = np.zeros(LDPC_N, dtype=np.uint8)
     no_improve = 0
@@ -44,9 +61,10 @@ def min_sum_decode(
         # Check parity
         errors = 0
         for r in range(LDPC_M):
-            idxs = Nm[r, : row_deg[r]]
-            if idxs.size == 0:
+            deg = int(row_deg[r])
+            if deg <= 0:
                 continue
+            idxs = Nm[r, :deg]
             parity = np.bitwise_xor.reduce(bits[idxs])
             if parity != 0:
                 errors += 1
@@ -61,22 +79,24 @@ def min_sum_decode(
 
         # Check node update: messages from check r to each connected variable
         for r in range(LDPC_M):
-            idxs = Nm[r, : row_deg[r]]
-            if idxs.size == 0:
+            deg = int(row_deg[r])
+            if deg <= 0:
                 continue
-            incoming = np.empty_like(idxs, dtype=np.float64)
-            for i, n in enumerate(idxs):
-                # message to r from n is llr[n] + sum tov[n, other checks]
-                # find position of r in Mn[n]
-                where = np.where(Mn[n] == r)[0]
-                mpos = int(where[0]) if where.size else 0
-                incoming[i] = llr_174[n] + tov[n, (np.arange(3) != mpos)].sum()
+            idxs = Nm[r, :deg]
+            # Build incoming messages efficiently
+            incoming = np.empty(deg, dtype=np.float64)
+            for i in range(deg):
+                n = int(idxs[i])
+                mpos = int(mpos_lookup[n, r])
+                # Sum tov for variable n excluding the message from this check (mpos)
+                total_tov = tov[n, 0] + tov[n, 1] + tov[n, 2]
+                incoming[i] = llr_174[n] + (total_tov - tov[n, mpos])
 
             signs = np.sign(incoming)
             absvals = np.abs(incoming)
             prod_sign = np.prod(signs) if signs.size > 0 else 1.0
             min1 = np.min(absvals)
-            for i in range(len(idxs)):
+            for i in range(deg):
                 s_excl = prod_sign / (signs[i] if signs[i] != 0 else 1.0)
                 new_msg = s_excl * min1
                 if config.damping > 0.0:
@@ -85,20 +105,22 @@ def min_sum_decode(
                     toc[r, i] = new_msg
 
         # Variable node update: messages from var n to check m_idx
+        # Precompute per-row sums once to avoid inner-loop summations
+        row_sums = np.zeros(LDPC_M, dtype=np.float64)
+        for r in range(LDPC_M):
+            deg = int(row_deg[r])
+            if deg > 0:
+                row_sums[r] = float(np.sum(toc[r, :deg]))
         for n in range(LDPC_N):
             for m_idx in range(3):
-                r = Mn[n, m_idx]
+                r = int(Mn[n, m_idx])
                 if r < 0:
                     continue
-                # find index j of n in row r
-                ridxs = Nm[r, : row_deg[r]]
-                j = int(np.where(ridxs == n)[0][0])
+                j = int(var_index_in_row[r, n])
+                if j < 0:
+                    continue
                 # Sum all check messages to n excluding from r
-                sum_checks = 0.0
-                for j2 in range(row_deg[r]):
-                    if j2 == j:
-                        continue
-                    sum_checks += toc[r, j2]
+                sum_checks = row_sums[r] - toc[r, j]
                 new_val = llr_174[n] + sum_checks
                 if config.damping > 0.0:
                     tov[n, m_idx] = (1 - config.damping) * new_val + config.damping * tov[n, m_idx]

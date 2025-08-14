@@ -22,6 +22,7 @@ from .ldpc_tables_embedded import get_parity_matrices
 from .crc import crc14_check
 from .message_decode import unpack_standard_payload
 from scipy.signal import decimate, get_window
+from .sync import find_sync_candidates_stft
 
 
 @dataclass(frozen=True)
@@ -119,19 +120,65 @@ def refine_sync_fine(
             T = 0.0
             for m in sync_starts:
                 for k in range(LENGTH_SYNC):
-                    tone = FT8_COSTAS_PATTERN[k]
+                    one = FT8_COSTAS_PATTERN[k]
                     pos = pos0_2 + off + (m + k) * sym_len
                     if pos < 0 or pos + sym_len > y2.size:
                         continue
                     seg = y2[pos: pos + sym_len]
                     # demod at tone freq with df tweak
-                    z = np.vdot(win * seg * ctweak, ctones[:, tone])
+                    z = np.vdot(win * seg * ctweak, ctones[:, one])
                     T += float((z.real * z.real + z.imag * z.imag))
             if T > best_score:
                 best_score = T
                 best_df = float(df)
                 best_off = int(off)
 
+    return best_off, best_df, best_score
+
+
+def _refine_sync_on_downsampled(
+    y2: np.ndarray,
+    fs2: float,
+    pos0_2: int,
+    time_search_ms: int = 40,
+    time_step_ms: int = 5,
+    freq_search_hz: float = 2.5,
+    freq_step_hz: float = 0.5,
+) -> Tuple[int, float, float]:
+    """Variant of refine_sync_fine that operates on precomputed downsampled complex baseband.
+    Returns (best_offset_samples_200Hz, best_df_hz, best_score)."""
+    sym_len = int(round(SYMBOL_PERIOD_S * fs2))
+    if sym_len <= 0:
+        return 0, 0.0, -1e30
+    ctones = _precompute_ctones(sym_len, fs2)
+    win = get_window('hann', sym_len, fftbins=True).astype(np.float64)
+    win /= np.sqrt(np.sum(win ** 2))
+    n = np.arange(sym_len, dtype=np.float64)
+    df_vals = np.arange(-freq_search_hz, freq_search_hz + 1e-9, freq_step_hz, dtype=np.float64)
+    ctweaks = [np.cos(-2.0 * np.pi * df * n / fs2) - 1j * np.sin(-2.0 * np.pi * df * n / fs2) for df in df_vals]
+    tsamp = int(round(time_step_ms * fs2 / 1000.0))
+    max_tsamp = int(round(time_search_ms * fs2 / 1000.0))
+    time_offsets = list(range(-max_tsamp, max_tsamp + 1, tsamp))
+    best_score = -1e300
+    best_df = 0.0
+    best_off = 0
+    sync_starts = (0, 36, 72)
+    for df, ctweak in zip(df_vals, ctweaks):
+        for off in time_offsets:
+            T = 0.0
+            for m in sync_starts:
+                for k in range(LENGTH_SYNC):
+                    one = FT8_COSTAS_PATTERN[k]
+                    pos = pos0_2 + off + (m + k) * sym_len
+                    if pos < 0 or pos + sym_len > y2.size:
+                        continue
+                    seg = y2[pos: pos + sym_len]
+                    z = np.vdot(win * seg * ctweak, ctones[:, one])
+                    T += float((z.real * z.real + z.imag * z.imag))
+            if T > best_score:
+                best_score = T
+                best_df = float(df)
+                best_off = int(off)
     return best_off, best_df, best_score
 
 
@@ -152,16 +199,16 @@ def coherent_symbol_energies(
     win /= np.sqrt(np.sum(win ** 2))
 
     E = np.zeros((len(symbol_indices), 8), dtype=np.float64)
+    # Vectorize per-tone correlation using a single dot per symbol against all 8 tones
+    H = np.conjugate(ctones)
     for i, t in enumerate(symbol_indices):
         pos = pos0_2 + t * sym_len
         if pos < 0 or pos + sym_len > y2.size:
             continue
         seg = y2[pos: pos + sym_len]
         segw = win * seg * ctweak
-        # energies for 8 tones
-        for tone in range(8):
-            z = np.vdot(segw, ctones[:, tone])
-            E[i, tone] = float((z.real * z.real + z.imag * z.imag))
+        z_all = H.T @ segw
+        E[i, :] = (z_all.real * z_all.real + z_all.imag * z_all.imag)
     return E
 
 
@@ -189,8 +236,8 @@ def _llrs_from_linear_energies_gray_groups(energies_row: np.ndarray) -> Tuple[fl
     # Map to Gray order index j -> energies of Gray-coded symbol j
     s_gray = np.empty(8, dtype=np.float64)
     for j in range(8):
-        tone = FT8_GRAY_MAP[j]
-        s_gray[j] = float(max(energies_row[tone], 1e-20))
+        one = FT8_GRAY_MAP[j]
+        s_gray[j] = float(max(energies_row[one], 1e-20))
     # Group indices for each bit
     g0 = (0, 1, 2, 3)
     g1 = (4, 5, 6, 7)
@@ -216,9 +263,9 @@ def _sync_score_for_base(wf_mag: np.ndarray, start: int, base_idx: int) -> float
             t = block_start + k
             if t < 0 or t >= num_symbols:
                 continue
-            tone = FT8_COSTAS_PATTERN[k]
+            one = FT8_COSTAS_PATTERN[k]
             row = wf_mag[t, base_idx, :]
-            score += float(row[tone])
+            score += float(row[one])
             count += 1
     if count == 0:
         return -1e9
@@ -226,7 +273,7 @@ def _sync_score_for_base(wf_mag: np.ndarray, start: int, base_idx: int) -> float
 
 
 def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDecode]:
-    # Analyze the entire buffer at several fractional symbol alignments using STFT waterfall
+    # Analyze the entire buffer by generating STFT-based sync candidates for efficiency
     n_fft = int(round(sample_rate_hz * SYMBOL_PERIOD_S))
     if n_fft <= 0:
         return []
@@ -236,91 +283,71 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDe
     config = BeliefPropagationConfig(max_iterations=50, early_stop_no_improve=15)
 
     results: List[CandidateDecode] = []
-    # Coarse timing sweep: 8 phases across one symbol
-    step = max(1, n_fft // 8)
-    for start_sample in range(0, min(n_fft, samples.size), step):
-        total_symbols = max(0, int((samples.size - start_sample) // n_fft))
-        if total_symbols < 79:
+
+    # Find top candidates via STFT matched filter (both integer and +0.5 fractional bins)
+    candidates, n_fft_stft, hop = find_sync_candidates_stft(samples.astype(np.float64), sample_rate_hz, top_k=300)
+
+    bin_hz = sample_rate_hz / n_fft if n_fft > 0 else TONE_SPACING_HZ
+
+    for cand in candidates:
+        # Map candidate frame_start to coarse sample index aligned to symbol grid
+        coarse_abs_start = cand.frame_start * hop
+        if coarse_abs_start < 0:
             continue
-        wf = compute_waterfall_symbols(samples, sample_rate_hz, start_sample, num_symbols=total_symbols)
-        num_symbols, num_bases, _ = wf.mag.shape
-        window_len = LENGTH_SYNC + (NUM_SYNC - 1) * SYNC_OFFSET
-        t_min = 0
-        t_max = max(0, num_symbols - window_len)
+        for frac in (cand.frac,):
+            base_freq_hz = (cand.base_bin + frac) * bin_hz
 
-        candidate_list: list[tuple[float, int, int]] = []  # (score, t, base_idx)
-        for t in range(t_min, t_max + 1):
-            for base_idx in range(num_bases):
-                s = _sync_score_for_base(wf.mag, t, int(base_idx))
-                candidate_list.append((s, t, int(base_idx)))
-
-        candidate_list.sort(key=lambda x: x[0], reverse=True)
-        candidate_list = candidate_list[:150]
-
-        # Process top candidates with fine refinement and coherent demod
-        for score, start, base_idx in candidate_list:
-            # Compute absolute sample index at coarse start symbol
-            n_fft = int(round(sample_rate_hz * SYMBOL_PERIOD_S))
-            coarse_abs_start = start_sample + start * n_fft
-            if coarse_abs_start < 0:
+            # Downmix/decimate once per candidate
+            decim = max(1, int(round(sample_rate_hz / 200.0)))
+            y2, fs2 = _downmix_and_decimate(samples, sample_rate_hz, base_freq_hz, decim)
+            sym_len2 = int(round(SYMBOL_PERIOD_S * fs2))
+            pos0_2 = int(round(coarse_abs_start / decim))
+            if sym_len2 <= 0:
                 continue
 
-            # Bin spacing and base frequency for both frac hypotheses
-            bin_hz = sample_rate_hz / n_fft if n_fft > 0 else TONE_SPACING_HZ
-            for frac in (0.0, 0.5):
-                base_freq_hz = (base_idx + frac) * bin_hz
+            # Refine time and frequency using downsampled baseband without re-decimation
+            best_off_2, df_hz, corr_score = _refine_sync_on_downsampled(y2, fs2, pos0_2)
 
-                # Refine time and frequency via Costas correlation at 200 Hz
-                best_off_2, df_hz, corr_score = refine_sync_fine(
-                    samples, sample_rate_hz, base_freq_hz, coarse_abs_start
-                )
+            pos0_2_ref = pos0_2 + best_off_2
 
-                # Downmix/decimate once more to reuse in demod
-                decim = max(1, int(round(sample_rate_hz / 200.0)))
-                y2, fs2 = _downmix_and_decimate(samples, sample_rate_hz, base_freq_hz, decim)
-                sym_len2 = int(round(SYMBOL_PERIOD_S * fs2))
-                pos0_2 = int(round(coarse_abs_start / decim)) + best_off_2
-                if sym_len2 <= 0:
-                    continue
+            # Build symbol index lists
+            sync_times = (
+                list(range(0, 7)) +
+                list(range(36, 43)) +
+                list(range(72, 79))
+            )
+            # Use times RELATIVE to candidate start for coherent demod
+            data_times_rel = list(range(7, 36)) + list(range(43, 72))
 
-                # Build symbol index lists
-                sync_times = (
-                    list(range(0, 7)) +
-                    list(range(36, 43)) +
-                    list(range(72, 79))
-                )
-                # Use times RELATIVE to candidate start for coherent demod
-                data_times_rel = list(range(7, 36)) + list(range(43, 72))
+            # Evaluate Costas match quality gate
+            # Compute sync energies at refined alignment
+            sync_E = coherent_symbol_energies(y2, fs2, pos0_2_ref, df_hz, sync_times)
+            if sync_E.shape[0] != 21:
+                continue
+            # Allow a low threshold; LDPC+CRC will validate true decodes
+            if count_costas_matches(sync_E) < 3:
+                continue
 
-                # Evaluate Costas match quality gate
-                # Compute sync energies at refined alignment
-                sync_E = coherent_symbol_energies(y2, fs2, pos0_2, df_hz, sync_times)
-                if sync_E.shape[0] != 21:
-                    continue
-                # Allow a low threshold; LDPC+CRC will validate true decodes
-                if count_costas_matches(sync_E) < 3:
-                    continue
+            # Coherent demod for data symbols
+            E = coherent_symbol_energies(y2, fs2, pos0_2_ref, df_hz, data_times_rel)
+            # Convert linear energies to LLRs via Gray group log-sum ratios
+            llrs: List[float] = []
+            for row in E:
+                l2, l1, l0 = _llrs_from_linear_energies_gray_groups(row)
+                # Maintain order (b0,b1,b2) in stream as before
+                llrs.extend([l0, l1, l2])
+            llrs_arr = np.array(llrs[:174], dtype=np.float64)
 
-                # Coherent demod for data symbols
-                E = coherent_symbol_energies(y2, fs2, pos0_2, df_hz, data_times_rel)
-                # Convert linear energies to LLRs via Gray group log-sum ratios
-                llrs: List[float] = []
-                for row in E:
-                    l2, l1, l0 = _llrs_from_linear_energies_gray_groups(row)
-                    # Maintain order (b0,b1,b2) in stream as before
-                    llrs.extend([l0, l1, l2])
-                llrs_arr = np.array(llrs[:174], dtype=np.float64)
-
-                errors, bits = min_sum_decode(llrs_arr, Mn, Nm, config)
-                payload_with_crc = bits[:91]
-                bits_with_crc = np.concatenate([payload_with_crc[:77], payload_with_crc[77:91]])
-                if not crc14_check(bits_with_crc):
-                    continue
-                results.append(
-                    CandidateDecode(start_symbol=start, ldpc_errors=errors, bits_with_crc=bits_with_crc)
-                )
-                if len(results) >= 10:
-                    return results
+            errors, bits = min_sum_decode(llrs_arr, Mn, Nm, config)
+            payload_with_crc = bits[:91]
+            bits_with_crc = np.concatenate([payload_with_crc[:77], payload_with_crc[77:91]])
+            if not crc14_check(bits_with_crc):
+                continue
+            results.append(
+                CandidateDecode(start_symbol=int(round(coarse_abs_start / n_fft)), ldpc_errors=errors, bits_with_crc=bits_with_crc)
+            )
+            if len(results) >= 10:
+                return results
     return results
 
 
