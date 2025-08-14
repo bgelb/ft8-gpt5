@@ -303,9 +303,10 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDe
         llrs_arr *= 2.5
 
         errors, bits = min_sum_decode(llrs_arr, Mn, Nm, config)
-        # Map decoded codeword bits to payload+CRC using the single, consistent mapping
-        # determined by the embedded parity structure (rest_cols are the a91 positions).
-        a91 = bits[np.array(rest_cols, dtype=np.int64)].astype(np.uint8)
+        # Map decoded codeword bits to payload+CRC using spec order: first 91 bits are a91
+        if bits.shape[0] < 91:
+            continue
+        a91 = bits[:91].astype(np.uint8)
         bits_with_crc = np.concatenate([a91[:77], a91[77:91]])
         if not crc14_check(bits_with_crc):
             continue
