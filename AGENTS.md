@@ -35,3 +35,29 @@
 - Keep CI fast; mark long-running tests with `@pytest.mark.slow` and exclude by default.
 - Use only the `external/ft8_lib/test/wav` dataset files (.wav and .txt) for tests. Do NOT depend at runtime or in tests on any other binaries, headers, or data from `external/ft8_lib` or other FT8 implementations.
 - With the sole exception of using the sample `.wav` and `.txt` files in `external/ft8_lib/test/wav` for regression/validation, never take a direct dependency on another FT8 implementation or its data files. Embed any required small tables directly in this repository.
+
+# Background Agents
+
+This repository uses background agents to automate parts of the development and testing workflow.
+
+## Responsibilities
+
+- Maintain code quality and consistency
+- Keep the test suite green
+- Respect performance and reproducibility constraints
+
+## Rules
+
+- Do not make breaking API changes without bumping versions and updating downstream usages
+- Keep edits localized and minimal; avoid broad refactors unless explicitly requested
+- Prefer deterministic algorithms and reproducible pipelines
+- When running commands, always use non-interactive flags
+- Avoid long-running background jobs unless they are necessary for the task
+- Keep artifacts and caches out of the repository
+- Prefer reading context with search tools over guessing
+- After code edits, run tests/build and fix failures before marking complete
+- Do not add commentary inside code blocks just to explain actions
+- Use `src/` for implementation and `tests/` for tests
+- Submodules: update only when required and pin to known-good commits
+- When in doubt, follow the FT8 specification and reference implementations for protocol details
+- All mappings, translations, and transformations must be aligned with the FT8 specification. Do not add generic "fallback" logic that tries multiple permutations/sign inversions or alternate paths. Implement a single consistent decoding path used across all inputs.
