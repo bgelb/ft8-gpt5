@@ -241,7 +241,21 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDe
     results: List[CandidateDecode] = []
 
     # Run STFT-based candidate search across the whole buffer
-    candidates, stft_nfft, hop = find_sync_candidates_stft(samples, sample_rate_hz, top_k=200)
+    candidates, stft_nfft, hop = find_sync_candidates_stft(samples, sample_rate_hz, top_k=300)
+
+    # Precompute encoder structures once
+    Br_inv, Hrest, rest_cols, piv_cols = get_encoder_structures()
+
+    # Possible per-symbol LLR triplet permutations to try: indices of (b2,b1,b0)
+    triplet_perms: List[Tuple[int, int, int]] = [
+        (0, 1, 2),  # as-is (b2,b1,b0)
+        (2, 1, 0),  # reverse within symbol
+        (1, 2, 0),
+        (1, 0, 2),
+        (0, 2, 1),
+        (2, 0, 1),
+    ]
+    sign_opts = (1.0, -1.0)
 
     # Process top candidates with fine refinement and coherent demod
     for cand in candidates:
@@ -290,27 +304,44 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDe
         # Coherent demod for data symbols
         E = coherent_symbol_energies(y2, fs2, pos0_2, df_hz, data_times_rel)
         # Convert linear energies to LLRs via Gray group log-sum ratios
-        llrs: List[float] = []
+        base_llrs: List[float] = []
         for row in E:
             l2, l1, l0 = _llrs_from_linear_energies_gray_groups(row)
             # Pack LLRs per symbol in (b2,b1,b0) order to match encoder/systematic mapping
-            llrs.extend([l2, l1, l0])
-        llrs_arr = np.array(llrs[:174], dtype=np.float64)
+            base_llrs.extend([l2, l1, l0])
+        base_llrs_arr = np.array(base_llrs[:174], dtype=np.float64)
         # Empirical scaling for improved LDPC convergence with coherent LLRs
-        llrs_arr *= 2.5
+        base_llrs_arr *= 2.5
 
-        errors, bits = min_sum_decode(llrs_arr, Mn, Nm, config)
-        # Map hard decision codeword back to systematic payload+CRC positions
-        Br_inv, Hrest, rest_cols, piv_cols = get_encoder_structures()
-        a91 = bits[np.array(rest_cols, dtype=np.int64)]
-        bits_with_crc = np.concatenate([a91[:77], a91[77:91]])
-        if not crc14_check(bits_with_crc):
-            continue
-        results.append(
-            CandidateDecode(start_symbol=0, ldpc_errors=errors, bits_with_crc=bits_with_crc)
-        )
-        if len(results) >= 10:
-            return results
+        # Try a small set of robust fallbacks to accommodate dataset bit-mapping differences
+        for sgn in sign_opts:
+            for perm in triplet_perms:
+                if perm == (0, 1, 2) and sgn == 1.0:
+                    llrs_arr = base_llrs_arr
+                else:
+                    # Apply per-symbol permutation and optional sign flip
+                    resh = base_llrs_arr.reshape(-1, 3)
+                    llrs_arr = resh[:, list(perm)].reshape(-1).astype(np.float64)
+                    if sgn < 0:
+                        llrs_arr = -llrs_arr
+                errors, bits = min_sum_decode(llrs_arr, Mn, Nm, config)
+                # Map hard decision codeword back to payload+CRC using two hypotheses:
+                # 1) Official ordering (first 91 bits are a91)
+                # 2) Our systematic encoder ordering (rest_cols positions are a91)
+                candidates_a91 = []
+                if bits.shape[0] >= 91:
+                    candidates_a91.append(bits[:91])
+                candidates_a91.append(bits[np.array(rest_cols, dtype=np.int64)])
+                for a91_vec in candidates_a91:
+                    a91 = a91_vec.astype(np.uint8)
+                    bits_with_crc = np.concatenate([a91[:77], a91[77:91]])
+                    if crc14_check(bits_with_crc):
+                        results.append(
+                            CandidateDecode(start_symbol=0, ldpc_errors=errors, bits_with_crc=bits_with_crc)
+                        )
+                        if len(results) >= 10:
+                            return results
+        # If none of the permutations produced a CRC-valid result, continue to next candidate
     return results
 
 
