@@ -11,7 +11,7 @@ A from-scratch FT8 decoder library with tests and benchmarks.
 ## Architecture summary
 - Input/Waterfall: compute tone-aligned magnitudes with Hann windowing and oversampling.
 - Sync: vectorized 7x7 Costas detection across time/frequency to propose top-N candidates.
-- Refinement: fractional frequency via Goertzel bank centered at 6.25 Hz spacing.
+- Refinement: coherent ML estimator over the three Costas blocks jointly refines CFO (fractional bin) and timing via complex correlation on an STFT with ~T/2 hops, with parabolic sub-bin interpolation along both axes; then use the refined CFO to derotate and extract per-symbol magnitudes before LLRs.
 - LLR + LDPC: Gray-map LLRs; min-sum LDPC (174,91) with damping/scaling and sparse structures.
 - CRC + Message: CRC-14 check; message unpack to human-readable text (standard and selected non-standard forms).
 - API: `ft8gpt.api.decode_wav(path_or_file)` returns `DecodeResult` records with integrity flags.

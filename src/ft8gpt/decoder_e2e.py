@@ -12,6 +12,7 @@ from .ldpc_tables_embedded import get_parity_matrices
 from .crc import crc14_check
 from .message_decode import unpack_standard_payload
 from .constants import FT8_COSTAS_PATTERN
+from .refine import refine_cfo_and_timing, extract_derotated_symbol_magnitudes
 
 
 @dataclass(frozen=True)
@@ -78,20 +79,39 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDe
                 candidate_list.append((s, t, int(base_idx)))
 
         candidate_list.sort(key=lambda x: x[0], reverse=True)
-        candidate_list = candidate_list[:300]
+        candidate_list = candidate_list[:200]
 
         for score, start, base_idx in candidate_list:
+            # Data symbol indices within this candidate (exclude Costas blocks)
             data_times = list(range(start + 7, start + 36)) + list(range(start + 43, start + 72))
             valid_times = [t for t in data_times if 0 <= t < num_symbols]
             if len(valid_times) < 58:
                 continue
-            # Try both integer-bin and +0.5-bin alignments
-            for mag_cube in (wf.mag, wf.mag_half):
+
+            # Try both integer-bin and +0.5-bin initial alignments; refine coherently then derotate
+            for initial_frac, mag_cube in ((0.0, wf.mag), (0.5, wf.mag_half)):
                 if base_idx >= mag_cube.shape[1]:
                     continue
-                symbol_rows = [mag_cube[t, base_idx, :] for t in valid_times]
-                wf_group = np.stack(symbol_rows, axis=0)
-                llrs = llrs_from_waterfall(wf_group)
+                refine_res, n_fft_ref, hop_ref = refine_cfo_and_timing(
+                    samples,
+                    sample_rate_hz,
+                    start_sample,
+                    start_symbol=start,
+                    base_bin=base_idx,
+                    initial_frac=initial_frac,
+                )
+                # Use refined CFO/timing to compute derotated per-symbol magnitudes for data symbols
+                mags = extract_derotated_symbol_magnitudes(
+                    samples,
+                    sample_rate_hz,
+                    start_sample,
+                    valid_times,
+                    base_idx,
+                    refine_res.frac_bin,
+                    n_fft_ref,
+                    refine_res.delta_frames,
+                )
+                llrs = llrs_from_waterfall(mags)
                 errors, bits = min_sum_decode(llrs, Mn, Nm, config)
                 payload_with_crc = bits[:91]
                 bits_with_crc = np.concatenate([payload_with_crc[:77], payload_with_crc[77:91]])
