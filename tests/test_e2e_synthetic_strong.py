@@ -1,5 +1,6 @@
 import numpy as np
 import soundfile as sf
+import io
 
 from ft8gpt.ft8pack import pack_standard_payload
 from ft8gpt.crc import crc14
@@ -24,11 +25,14 @@ def test_e2e_synthetic_strong(tmp_path):
     tones = tones_from_codeword(codeword)
     sr = 12000.0
     x = synthesize_ft8_audio(tones, sr)
-    wav = tmp_path / "strong.wav"
-    sf.write(str(wav), x, int(sr))
 
-    # Run through public API
-    results = decode_wav(str(wav))
+    # Serialize to WAV in-memory
+    buf = io.BytesIO()
+    sf.write(buf, x, int(sr), format='WAV', subtype='FLOAT')
+    buf.seek(0)
+
+    # Run through public API from in-memory stream
+    results = decode_wav(buf)
     assert isinstance(results, list)
     # Ensure we successfully decode at least one candidate from the strong synthetic sample
     assert len(results) > 0

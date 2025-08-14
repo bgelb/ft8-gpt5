@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Union, IO
 import numpy as np
 import soundfile as sf
 
@@ -20,13 +20,13 @@ class DecodeResult:
     ldpc_errors: int
 
 
-def decode_wav(path: str) -> List[DecodeResult]:
+def decode_wav(path_or_file: Union[str, "os.PathLike[str]", IO[bytes]]) -> List[DecodeResult]:
     """
-    Decode all FT8 signals in a 15-second WAV file.
+    Decode all FT8 signals in a 15-second WAV file or file-like object.
 
-    Minimal placeholder that just loads audio and returns no decodes yet.
+    Accepts a filesystem path or a binary file-like object (e.g., io.BytesIO).
     """
-    samples, sample_rate_hz = sf.read(path, always_2d=False)
+    samples, sample_rate_hz = sf.read(path_or_file, always_2d=False)
     x = samples[:, 0] if getattr(samples, "ndim", 1) > 1 else samples
     x = np.asarray(x, dtype=np.float64)
     # Run a basic pipeline using embedded parity tables
