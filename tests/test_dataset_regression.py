@@ -22,6 +22,7 @@ def test_minimal_dataset_available():
 
 
 @pytest.mark.regression
+@pytest.mark.slow
 def test_decode_one_strong_sample_runtime(benchmark):
     # Pick a likely-strong sample file; fall back to skip if not present
     if not DATASET_DIR.exists():
