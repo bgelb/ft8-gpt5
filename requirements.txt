@@ -3,5 +3,6 @@ scipy==1.16.1
 soundfile==0.12.1
 pytest==7.4.4
 pytest-benchmark==4.0.0
+pytest-xdist==3.6.1
 requests==2.31.0
 
