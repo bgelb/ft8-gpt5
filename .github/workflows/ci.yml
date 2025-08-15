@@ -48,9 +48,15 @@ jobs:
           pip install -r requirements.txt
           pip install -e .
 
-      - name: Build ft8_lib decoder (for cross-check test)
+      - name: Build ft8_lib decoder (Linux)
+        if: runner.os == 'Linux'
         run: |
-          make -C external/ft8_lib decode_ft8
+          make -C external/ft8_lib decode_ft8 CFLAGS="-D_POSIX_C_SOURCE=200809L" LDFLAGS="-lrt"
+
+      - name: Build ft8_lib decoder (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          make -C external/ft8_lib decode_ft8 CFLAGS="-D_DARWIN_C_SOURCE -D_POSIX_C_SOURCE=200809L"
 
       - name: Run tests
         run: |
