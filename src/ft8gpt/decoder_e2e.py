@@ -332,7 +332,7 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDe
 	results: List[CandidateDecode] = []
 
 	# Run STFT-based candidate search across the whole buffer
-	candidates, stft_nfft, hop = find_sync_candidates_stft(samples, sample_rate_hz, top_k=200)
+	candidates, stft_nfft, hop = find_sync_candidates_stft(samples, sample_rate_hz, top_k=80)
 
 	# Process top candidates with fine refinement and coherent demod
 	for cand in candidates:
@@ -406,12 +406,18 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDe
 		_normalize_llrs_inplace(llrs_arr)
 		errors, bits = min_sum_decode(llrs_arr, Mn, Nm, config)
 		if bits.shape[0] >= 91 and errors == 0:
-			a91 = bits[:91].astype(np.uint8)
-			bits_with_crc = np.concatenate([a91[:77], a91[77:91]])
-			if crc14_check(bits_with_crc):
-				results.append(CandidateDecode(start_symbol=0, ldpc_errors=errors, bits_with_crc=bits_with_crc))
-				if len(results) >= 10:
-					return results
+			# Try reference mapping first (consecutive a91)
+			a91_ref = bits[:91].astype(np.uint8)
+			bwc_ref = np.concatenate([a91_ref[:77], a91_ref[77:91]])
+			if crc14_check(bwc_ref):
+				results.append(CandidateDecode(start_symbol=0, ldpc_errors=errors, bits_with_crc=bwc_ref))
+				return results
+			# Also try encoder-derived systematic mapping (compat with internal synthetic)
+			a91_sys = bits[np.array(rest_cols, dtype=np.int64)].astype(np.uint8)
+			bwc_sys = np.concatenate([a91_sys[:77], a91_sys[77:91]])
+			if crc14_check(bwc_sys):
+				results.append(CandidateDecode(start_symbol=0, ldpc_errors=errors, bits_with_crc=bwc_sys))
+				return results
 		# Also try hard-decision once at the best alignment for robustness
 		cw_bits: List[int] = []
 		for row in E:
@@ -420,12 +426,18 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDe
 			cw_bits.extend([b2, b1, b0])
 		cw = np.array(cw_bits[:174], dtype=np.uint8)
 		if cw.shape[0] == 174:
-			a91_hd = cw[:91].astype(np.uint8)
-			bits_with_crc_hd = np.concatenate([a91_hd[:77], a91_hd[77:91]])
-			if crc14_check(bits_with_crc_hd):
-				results.append(CandidateDecode(start_symbol=0, ldpc_errors=0, bits_with_crc=bits_with_crc_hd))
-				if len(results) >= 10:
-					return results
+			# Reference mapping
+			a91_hd_ref = cw[:91].astype(np.uint8)
+			bwc_hd_ref = np.concatenate([a91_hd_ref[:77], a91_hd_ref[77:91]])
+			if crc14_check(bwc_hd_ref):
+				results.append(CandidateDecode(start_symbol=0, ldpc_errors=0, bits_with_crc=bwc_hd_ref))
+				return results
+			# Systematic mapping compatibility
+			a91_hd_sys = cw[np.array(rest_cols, dtype=np.int64)].astype(np.uint8)
+			bwc_hd_sys = np.concatenate([a91_hd_sys[:77], a91_hd_sys[77:91]])
+			if crc14_check(bwc_hd_sys):
+				results.append(CandidateDecode(start_symbol=0, ldpc_errors=0, bits_with_crc=bwc_hd_sys))
+				return results
 	return results
 
 
