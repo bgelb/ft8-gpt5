@@ -77,10 +77,10 @@ def refine_sync_fine(
 	sample_rate_hz: float,
 	base_freq_hz: float,
 	coarse_abs_start_sample: int,
-	time_search_ms: int = 60,
-	time_step_ms: int = 2.5,
-	freq_search_hz: float = 5.0,
-	freq_step_hz: float = 0.25,
+	time_search_ms: int = 40,
+	time_step_ms: int = 5,
+	freq_search_hz: float = 2.5,
+	freq_step_hz: float = 0.5,
 ) -> Tuple[int, float, float]:
 	"""Refine time (±time_search in steps) and frequency (±freq_search in steps) using
 	quasi-coherent cross-correlation against the Costas pattern.
@@ -107,8 +107,8 @@ def refine_sync_fine(
 	df_vals = np.arange(-freq_search_hz, freq_search_hz + 1e-9, freq_step_hz, dtype=np.float64)
 	ctweaks = [np.cos(-2.0 * np.pi * df * n / fs2) - 1j * np.sin(-2.0 * np.pi * df * n / fs2) for df in df_vals]
 
-	# Time offsets in downsampled samples
-	tsamp = max(1, int(round(time_step_ms * fs2 / 1000.0)))
+	# Time offsets in downsampled samples (5 ms per step at 200 Hz)
+	tsamp = int(round(time_step_ms * fs2 / 1000.0))
 	max_tsamp = int(round(time_search_ms * fs2 / 1000.0))
 	time_offsets = list(range(-max_tsamp, max_tsamp + 1, tsamp))
 
@@ -309,7 +309,7 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDe
 		# Convert linear energies to LLRs using max-of-groups per FT8 reference
 		llrs: List[float] = []
 		for row in E:
-			l2, l1, l0 = _llrs_from_linear_energies_gray_groups_max(row)
+			l2, l1, l0 = _llrs_from_linear_energies_gray_groups(row)
 			llrs.extend([l2, l1, l0])
 		llrs_arr = np.array(llrs[:174], dtype=np.float64)
 		llrs_arr *= 2.5
