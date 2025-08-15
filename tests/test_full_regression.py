@@ -52,8 +52,6 @@ def parse_expected_sets(path: Path) -> tuple[set[str], set[str]]:
         # Strip any leading explicit negative marker characters from message
         msg_clean = msg.lstrip("!- ")
         norm = _normalize_msg(msg_clean)
-        if not _is_standard_supported(norm):
-            continue
         (neg if negative_marker else pos).add(norm)
     return pos, neg
 
