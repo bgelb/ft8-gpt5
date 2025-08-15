@@ -7,15 +7,6 @@ import pytest
 from ft8gpt import decode_wav
 
 
-def _normalize_msg(s: str) -> str:
-    return re.sub(r"\s+", " ", s.strip().upper())
-
-
-def _is_standard_supported(msg_norm: str) -> bool:
-    return bool(
-        re.match(r"^(CQ)\s+[A-Z0-9/]+\s+[A-R]{2}[0-9]{2}$", msg_norm)
-        or re.match(r"^[A-Z0-9/]+\s+[A-Z0-9/]+\s+[A-R]{2}[0-9]{2}$", msg_norm)
-    )
 
 
 def parse_expected_sets(path: Path) -> tuple[set[str], set[str]]:
@@ -51,8 +42,8 @@ def parse_expected_sets(path: Path) -> tuple[set[str], set[str]]:
         )
         # Strip any leading explicit negative marker characters from message
         msg_clean = msg.lstrip("!- ")
-        norm = _normalize_msg(msg_clean)
-        (neg if negative_marker else pos).add(norm)
+        val = msg_clean
+        (neg if negative_marker else pos).add(val)
     return pos, neg
 
 
@@ -79,7 +70,7 @@ def test_full_dataset_nonregression():
         if not pos_expected and not neg_expected:
             continue
         results = decode_wav(str(wav))
-        got = {_normalize_msg(r.message) for r in results if getattr(r, "crc14_ok", False) and r.message}
+        got = {r.message for r in results if getattr(r, "crc14_ok", False) and r.message}
 
         matched_pos = len(pos_expected & got)
         violated_neg = len(neg_expected & got)
