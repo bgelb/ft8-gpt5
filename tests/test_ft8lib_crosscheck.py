@@ -26,9 +26,10 @@ def _build_ft8lib_decode() -> Path | None:
         # Force a clean rebuild with portable feature macros and link flags so clock_gettime and math symbols resolve
         sysname = platform.system()
         cflags = "-D_POSIX_C_SOURCE=200809L"
-        ldflags = "-lm"
+        ldflags = ""
+        ldlibs = "-lm"
         if sysname == "Linux":
-            ldflags = "-lrt -lm"
+            ldlibs = "-lrt -lm"
         elif sysname == "Darwin":
             cflags = "-D_DARWIN_C_SOURCE -D_POSIX_C_SOURCE=200809L"
 
@@ -37,6 +38,7 @@ def _build_ft8lib_decode() -> Path | None:
         env["MAKEFLAGS"] = f"{env.get('MAKEFLAGS', '').strip()} -e".strip()
         env["CFLAGS"] = cflags
         env["LDFLAGS"] = ldflags
+        env["LDLIBS"] = ldlibs
 
         subprocess.run(["make", "-C", str(libdir), "clean"], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         subprocess.run(["make", "-C", str(libdir), "decode_ft8"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
