@@ -35,10 +35,14 @@ def decode_wav(path_or_file: Union[str, "os.PathLike[str]", IO[bytes]]) -> List[
     for d in decs:
         # Reconstruct payload bytes (first 77 bits) and attempt to unpack as standard
         payload_bits = np.concatenate([d.bits_with_crc[:77], np.zeros(3, dtype=np.uint8)])
-        # Pad to 80 bits (10 bytes) for convenience
-        b = np.packbits(payload_bits)[:10].tobytes()
+        # Pack to 10 bytes, MSB-first
+        b = np.packbits(payload_bits)[:10]
+        # Set FT8 message type i3=1 for standard messages (bits 5..3 of last byte)
+        last = int(b[-1])
+        last = (last & (~0x38 & 0xFF)) | (1 << 3)
+        b[-1] = np.uint8(last)
         try:
-            dec = unpack_standard_payload(b)
+            dec = unpack_standard_payload(bytes(b))
             msg = f"{dec.call_to} {dec.call_de} {dec.extra}".strip()
         except Exception:
             msg = ""

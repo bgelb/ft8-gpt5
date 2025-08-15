@@ -120,6 +120,21 @@ def encode174_bits_systematic(a91_bits: np.ndarray) -> np.ndarray:
     return cw
 
 
+def encode174_bits_consecutive(a91_bits: np.ndarray) -> np.ndarray:
+    """Encode 91-bit payload+CRC into 174-bit codeword in reference order [a|p].
+
+    This matches the bit ordering expected by the reference implementation's ft8_encode/encode174,
+    where the first LDPC_K bits are the message (a91) followed by LDPC_M parity bits.
+    """
+    if a91_bits.shape[0] != LDPC_K:
+        raise ValueError("a91_bits must have length LDPC_K")
+    P = get_systematic_parity()  # shape [M,K]
+    a = a91_bits.astype(np.uint8)
+    p = (P @ a) % 2
+    cw = np.concatenate([a.astype(np.uint8), p.astype(np.uint8)])
+    assert cw.shape[0] == LDPC_N
+    return cw
+
 def get_encoder_structures() -> tuple[np.ndarray, np.ndarray, list[int], list[int]]:
     """Return (Hpiv_inv, Hrest, rest_cols, piv_cols) for H column permutation where Hpiv is invertible.
     Cached after first computation.

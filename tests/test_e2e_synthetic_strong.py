@@ -12,7 +12,8 @@ from ft8gpt.api import decode_wav
 
 def test_e2e_synthetic_strong(tmp_path):
     # Build payload (77 bits) for a standard message
-    a10 = pack_standard_payload("K1ABC", "W9XYZ", "FN20")
+    call_to = "K1ABC"; call_de = "W9XYZ"; grid = "FN20"
+    a10 = pack_standard_payload(call_to, call_de, grid)
     # Append CRC14
     bits77 = np.unpackbits(np.frombuffer(a10, dtype=np.uint8))[:77]
     c = crc14(bits77)

@@ -17,21 +17,34 @@ NTOKENS = 2063592
 
 
 def _ch_alphanum_space(v: int) -> str:
-    if v == 36:
+    """Inverse of packer's nchar_alphanum_space:
+    0 -> ' ', 1..10 -> '0'..'9', 11..36 -> 'A'..'Z'.
+    """
+    if v == 0:
         return ' '
-    return _ch_alphanum(v)
+    if 1 <= v <= 10:
+        return chr(ord('0') + (v - 1))
+    if 11 <= v <= 36:
+        return chr(ord('A') + (v - 11))
+    return ' '
 
 
 def _ch_alphanum(v: int) -> str:
-    if v < 26:
-        return chr(ord('A') + v)
-    return chr(ord('0') + (v - 26))
+    """Inverse of packer's nchar_alphanum: 0..9 -> '0'..'9', 10..35 -> 'A'..'Z'."""
+    if 0 <= v <= 9:
+        return chr(ord('0') + v)
+    if 10 <= v <= 35:
+        return chr(ord('A') + (v - 10))
+    return ' '
 
 
 def _ch_lspace(v: int) -> str:
+    """Inverse of packer's nchar_letters_space: 0 -> ' ', 1..26 -> 'A'..'Z'."""
     if v == 0:
         return ' '
-    return chr(ord('A') + (v - 1))
+    if 1 <= v <= 26:
+        return chr(ord('A') + (v - 1))
+    return ' '
 
 
 def _unpack_basecall(n: int) -> str:
