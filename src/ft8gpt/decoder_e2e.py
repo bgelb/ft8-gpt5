@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Tuple
 import numpy as np
+import math
 
 from .constants import (
 	NN,
@@ -14,6 +15,7 @@ from .constants import (
 	FT8_COSTAS_PATTERN,
 	TONE_SPACING_HZ,
 	FT8_GRAY_MAP,
+	gray_to_bits,
 )
 from .waterfall import compute_waterfall_symbols
 from .tones import extract_symbol_llrs
@@ -77,10 +79,10 @@ def refine_sync_fine(
 	sample_rate_hz: float,
 	base_freq_hz: float,
 	coarse_abs_start_sample: int,
-	time_search_ms: int = 40,
+	time_search_ms: int = 80,
 	time_step_ms: int = 5,
-	freq_search_hz: float = 2.5,
-	freq_step_hz: float = 0.5,
+	freq_search_hz: float = 3.2,
+	freq_step_hz: float = 0.25,
 ) -> Tuple[int, float, float]:
 	"""Refine time (±time_search in steps) and frequency (±freq_search in steps) using
 	quasi-coherent cross-correlation against the Costas pattern.
@@ -99,7 +101,8 @@ def refine_sync_fine(
 
 	# Precompute tone exponentials and window
 	ctones = _precompute_ctones(sym_len, fs2)
-	win = get_window('hann', sym_len, fftbins=True).astype(np.float64)
+	# Use rectangular window for sharper tone discrimination
+	win = np.ones(sym_len, dtype=np.float64)
 	win /= np.sqrt(np.sum(win ** 2))
 
 	# Build frequency tweak factors for each Δf
@@ -120,6 +123,7 @@ def refine_sync_fine(
 	for df, ctweak in zip(df_vals, ctweaks):
 		for off in time_offsets:
 			T = 0.0
+			cnt = 0
 			for m in sync_starts:
 				for k in range(LENGTH_SYNC):
 					tone = FT8_COSTAS_PATTERN[k]
@@ -127,10 +131,19 @@ def refine_sync_fine(
 					if pos < 0 or pos + sym_len > y2.size:
 						continue
 					seg = y2[pos: pos + sym_len]
-					# demod at tone freq with df tweak
-					z = np.vdot(win * seg * ctweak, ctones[:, tone])
-					T += float((z.real * z.real + z.imag * z.imag))
-			if T > best_score:
+					segw = win * seg * ctweak
+					# signal energy at expected tone
+					zc = np.vdot(segw, ctones[:, tone])
+					Es = float((zc.real * zc.real + zc.imag * zc.imag))
+					# noise proxy from adjacent tones within bank
+					tm = max(0, tone - 1)
+					tp = min(7, tone + 1)
+					zm = np.vdot(segw, ctones[:, tm])
+					zp = np.vdot(segw, ctones[:, tp])
+					En = 0.5 * float((zm.real * zm.real + zm.imag * zm.imag) + (zp.real * zp.real + zp.imag * zp.imag))
+					T += Es / (En + 1e-20)
+					cnt += 1
+			if cnt > 0 and T > best_score:
 				best_score = T
 				best_df = float(df)
 				best_off = int(off)
@@ -151,7 +164,8 @@ def coherent_symbol_energies(
 	ctones = _precompute_ctones(sym_len, fs2)
 	n = np.arange(sym_len, dtype=np.float64)
 	ctweak = np.cos(-2.0 * np.pi * df_hz * n / fs2) - 1j * np.sin(-2.0 * np.pi * df_hz * n / fs2)
-	win = get_window('hann', sym_len, fftbins=True).astype(np.float64)
+	# Use rectangular window for symbol integration
+	win = np.ones(sym_len, dtype=np.float64)
 	win /= np.sqrt(np.sum(win ** 2))
 
 	E = np.zeros((len(symbol_indices), 8), dtype=np.float64)
@@ -161,10 +175,13 @@ def coherent_symbol_energies(
 			continue
 		seg = y2[pos: pos + sym_len]
 		segw = win * seg * ctweak
+		den = float(np.vdot(segw, segw).real)
+		if not np.isfinite(den) or den <= 1e-20:
+			den = 1.0
 		# energies for 8 tones
 		for tone in range(8):
 			z = np.vdot(segw, ctones[:, tone])
-			E[i, tone] = float((z.real * z.real + z.imag * z.imag))
+			E[i, tone] = float((z.real * z.real + z.imag * z.imag)) / den
 	return E
 
 
@@ -221,6 +238,24 @@ def _llrs_from_linear_energies_gray_groups_max(energies_row: np.ndarray) -> Tupl
 	b1 = max4(s2[2], s2[3], s2[6], s2[7]) - max4(s2[0], s2[1], s2[4], s2[5])
 	b2 = max4(s2[1], s2[3], s2[5], s2[7]) - max4(s2[0], s2[2], s2[4], s2[6])
 	return b2, b1, b0
+
+
+def _normalize_llrs_inplace(llrs: np.ndarray) -> None:
+	"""Scale LLRs so that their variance matches the reference (~24) as in ftx_normalize_logl.
+
+	This improves LDPC convergence across a wide range of SNRs.
+	"""
+	if llrs.size == 0:
+		return
+	# Compute population variance
+	sum_val = float(np.sum(llrs))
+	sum2_val = float(np.sum(llrs * llrs))
+	inv_n = 1.0 / float(llrs.size)
+	variance = (sum2_val - (sum_val * sum_val * inv_n)) * inv_n
+	if variance <= 1e-12:
+		return
+	norm_factor = math.sqrt(24.0 / variance)
+	llrs *= norm_factor
 
 
 def _sync_score_for_base(wf_mag: np.ndarray, start: int, base_idx: int) -> float:
@@ -304,28 +339,46 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDe
 		if count_costas_matches(sync_E) < 18:
 			continue
 
-		# Coherent demod for data symbols
-		E = coherent_symbol_energies(y2, fs2, pos0_2, df_hz, data_times_rel)
-		# Convert linear energies to LLRs using max-of-groups per FT8 reference
-		llrs: List[float] = []
-		for row in E:
-			l2, l1, l0 = _llrs_from_linear_energies_gray_groups(row)
-			llrs.extend([l2, l1, l0])
-		llrs_arr = np.array(llrs[:174], dtype=np.float64)
-		llrs_arr *= 2.5
-
-		errors, bits = min_sum_decode(llrs_arr, Mn, Nm, config)
-		# Map decoded codeword bits to payload+CRC using spec order: first 91 bits are a91
-		if bits.shape[0] < 91:
-			continue
-		a91 = bits[:91].astype(np.uint8)
-		bits_with_crc = np.concatenate([a91[:77], a91[77:91]])
-		if not crc14_check(bits_with_crc):
-			continue
-		results.append(
-			CandidateDecode(start_symbol=0, ldpc_errors=errors, bits_with_crc=bits_with_crc)
-		)
-		if len(results) >= 10:
+		# Micro-refine CFO and time during data demod and attempt LDPC decode and hard-decision CRC
+		best_found = False
+		# Small micro-search around refined CFO and time (200 Hz domain)
+		cfo_grid = np.arange(df_hz - 0.8, df_hz + 0.8001, 0.2, dtype=np.float64)
+		time_grid = (-1, 0, 1)
+		for toff in time_grid:
+			for df in cfo_grid:
+				E = coherent_symbol_energies(y2, fs2, pos0_2 + int(toff), df, data_times_rel)
+				# LLR path
+				llrs: List[float] = []
+				for row in E:
+					l2, l1, l0 = _llrs_from_linear_energies_gray_groups(row)
+					llrs.extend([l2, l1, l0])
+				llrs_arr = np.array(llrs[:174], dtype=np.float64)
+				_normalize_llrs_inplace(llrs_arr)
+				errors, bits = min_sum_decode(llrs_arr, Mn, Nm, config)
+				if bits.shape[0] >= 91 and errors == 0:
+					a91 = bits[:91].astype(np.uint8)
+					bits_with_crc = np.concatenate([a91[:77], a91[77:91]])
+					if crc14_check(bits_with_crc):
+						results.append(CandidateDecode(start_symbol=0, ldpc_errors=errors, bits_with_crc=bits_with_crc))
+						best_found = True
+						break
+				# Hard-decision fallback for strong signals
+				cw_bits: List[int] = []
+				for row in E:
+					tone = int(np.argmax(row))
+					b2, b1, b0 = gray_to_bits(tone)
+					cw_bits.extend([b2, b1, b0])
+				cw = np.array(cw_bits[:174], dtype=np.uint8)
+				if cw.shape[0] == 174:
+					a91_hd = cw[:91].astype(np.uint8)
+					bits_with_crc_hd = np.concatenate([a91_hd[:77], a91_hd[77:91]])
+					if crc14_check(bits_with_crc_hd):
+						results.append(CandidateDecode(start_symbol=0, ldpc_errors=0, bits_with_crc=bits_with_crc_hd))
+						best_found = True
+						break
+			if best_found:
+				break
+		if best_found and len(results) >= 10:
 			return results
 	return results
 
