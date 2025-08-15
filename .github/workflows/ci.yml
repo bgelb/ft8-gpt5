@@ -83,11 +83,9 @@ jobs:
       - name: Publish unit test results
         if: always() && runner.os == 'Linux'
         uses: EnricoMi/publish-unit-test-result-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           files: reports/junit.xml
-          check_run_annotations: 'annotations'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           check_name: 'Unit Test Results'
 
 
