@@ -19,6 +19,10 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
     steps:
       - name: Checkout repository (with submodules)
         uses: actions/checkout@v4
@@ -79,7 +83,11 @@ jobs:
       - name: Publish unit test results
         if: always() && runner.os == 'Linux'
         uses: EnricoMi/publish-unit-test-result-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           files: reports/junit.xml
+          check_run_annotations: 'annotations'
+          check_name: 'Unit Test Results'
 
 
