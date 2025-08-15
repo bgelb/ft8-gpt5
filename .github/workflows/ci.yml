@@ -9,91 +9,83 @@ on:
       - '**'
   workflow_dispatch:
 
-jobs:
-  tests:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install system deps (build tools, libsndfile)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential libsndfile1
-
-      - name: Install Python deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install -e .
-
-      - name: Build ft8_lib decoder (for cross-check test)
-        run: |
-          make -C external/ft8_lib decode_ft8
-
-      - name: Run tests
-        run: |
-          python -m pytest -q
-
-name: CI
-on:
-  push:
-  pull_request:
-
 permissions:
   contents: read
 
 jobs:
   test:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
     permissions:
+      contents: read
       checks: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository (with submodules)
+        uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: actions/setup-python@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
+
       - name: Install system packages (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsndfile1
+          sudo apt-get install -y build-essential libsndfile1
+
       - name: Install system packages (macOS)
         if: runner.os == 'macOS'
         run: |
           brew update
           brew install libsndfile
-      - name: Install Python deps
+
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -e .
-      - name: Run tests (verbose)
+
+      - name: Patch ft8_lib Makefile for proper link order
+        run: |
+          sed -i -E 's/^(\t\$\(CC\) \$\(LDFLAGS\) -o \$@ \$\^)/\1 \$\(LDLIBS\)/' external/ft8_lib/Makefile
+
+      - name: Build ft8_lib decoder (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          make -C external/ft8_lib clean
+          make -C external/ft8_lib decode_ft8 CFLAGS="-D_POSIX_C_SOURCE=200809L" LDFLAGS="" LDLIBS="-lrt -lm"
+
+      - name: Build ft8_lib decoder (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          make -C external/ft8_lib clean
+          make -C external/ft8_lib decode_ft8 CFLAGS="-D_DARWIN_C_SOURCE -D_POSIX_C_SOURCE=200809L" LDFLAGS="" LDLIBS="-lm"
+
+      - name: Run tests
         run: |
           mkdir -p reports
-          pytest -vv -ra -m "not slow" -n auto --benchmark-disable --durations=0 --maxfail=1 --color=yes --capture=tee-sys --junitxml=reports/junit.xml --log-file=reports/pytest.log --log-file-level=INFO
+          pytest -vv -ra --durations=0 --maxfail=1 --color=yes --capture=tee-sys --junitxml=reports/junit.xml --log-file=reports/pytest.log --log-file-level=INFO
+
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ${{ runner.os }}-test-reports
           path: reports
+
       - name: Publish unit test results
         if: always() && runner.os == 'Linux'
         uses: EnricoMi/publish-unit-test-result-action@v2
         with:
           files: reports/junit.xml
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          check_name: 'Unit Test Results'
 
 
