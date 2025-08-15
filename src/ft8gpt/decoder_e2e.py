@@ -236,7 +236,7 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDe
 
     Mn, Nm = get_parity_matrices()
     # Stronger LDPC settings improve convergence with coherent LLRs
-    config = BeliefPropagationConfig(max_iterations=50, early_stop_no_improve=15)
+    config = BeliefPropagationConfig(max_iterations=80, early_stop_no_improve=25)
 
     # Compute codeword->payload mapping once based on embedded parity structure
     Br_inv, Hrest, rest_cols, piv_cols = get_encoder_structures()
