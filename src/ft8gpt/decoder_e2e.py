@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import List, Tuple
 import numpy as np
 import math
@@ -23,7 +24,8 @@ from .ldpc import min_sum_decode, BeliefPropagationConfig
 from .ldpc_tables_embedded import get_parity_matrices
 from .crc import crc14_check
 from .message_decode import unpack_standard_payload
-from scipy.signal import decimate, get_window
+from scipy.signal import get_window, sosfiltfilt, cheby1
+from numpy.lib.stride_tricks import as_strided
 from .sync import find_sync_candidates_stft
 from .ldpc_encode import get_encoder_structures
 
@@ -59,9 +61,23 @@ def _downmix_and_decimate(
 	phi = -2.0 * np.pi * carrier_hz * (n / sample_rate_hz)
 	osc = np.cos(phi) + 1j * np.sin(phi)
 	y = samples.astype(np.float64) * osc
-	# Zero-phase IIR decimation; sample_rate expected 12000 Hz, factor 60 -> 200 Hz
-	y_dec = decimate(y, decim_factor, ftype='iir', zero_phase=True)
+	# Zero-phase IIR decimation via cached SOS filter, then stride decimation
+	sos = _cached_decimator_sos(int(decim_factor))
+	yf = sosfiltfilt(sos, y)
+	y_dec = yf[::decim_factor]
 	return y_dec.astype(np.complex128, copy=False), float(sample_rate_hz / decim_factor)
+
+
+@lru_cache(maxsize=16)
+def _cached_decimator_sos(decim_factor: int):
+	"""Return cached Chebyshev-I lowpass SOS for integer decimation.
+
+	Matches SciPy decimate's default approximately: rp=0.05 dB, Wn=0.8/decim.
+	"""
+	rp_db = 0.05
+	wn = 0.8 / float(max(1, decim_factor))
+	N = 8
+	return cheby1(N, rp_db, wn, output='sos')
 
 
 def _precompute_ctones(symbol_len: int, fs_hz: float) -> np.ndarray:
@@ -92,62 +108,100 @@ def refine_sync_fine(
 	# Downmix to base frequency and decimate to 200 Hz (assumes 12000/60)
 	decim = max(1, int(round(sample_rate_hz / 200.0)))
 	y2, fs2 = _downmix_and_decimate(samples, sample_rate_hz, base_freq_hz, decim)
-	sym_len = int(round(SYMBOL_PERIOD_S * fs2))  # expect 32
-	if sym_len <= 0:
+	pos0_2 = int(round(coarse_abs_start_sample / decim))
+	return refine_sync_fine_precomputed(
+		y2,
+		fs2,
+		pos0_2,
+		time_search_ms=time_search_ms,
+		time_step_ms=time_step_ms,
+		freq_search_hz=freq_search_hz,
+		freq_step_hz=freq_step_hz,
+	)
+
+
+def refine_sync_fine_precomputed(
+	y2: np.ndarray,
+	fs2: float,
+	pos0_2: int,
+	time_search_ms: int = 80,
+	time_step_ms: int = 5,
+	freq_search_hz: float = 3.2,
+	freq_step_hz: float = 0.25,
+) -> Tuple[int, float, float]:
+	"""Vectorized refinement given precomputed 200 Hz baseband.
+
+	Returns (best_offset_samples_200Hz, best_df_hz, best_score).
+	"""
+	sym_len = int(round(SYMBOL_PERIOD_S * fs2))
+	if sym_len <= 0 or y2.size < sym_len:
 		return 0, 0.0, -1e30
 
-	# Absolute downsampled index of coarse start
-	pos0_2 = int(round(coarse_abs_start_sample / decim))
-
-	# Precompute tone exponentials and window
 	ctones = _precompute_ctones(sym_len, fs2)
-	# Use rectangular window for sharper tone discrimination
 	win = np.ones(sym_len, dtype=np.float64)
 	win /= np.sqrt(np.sum(win ** 2))
 
-	# Build frequency tweak factors for each Δf
 	n = np.arange(sym_len, dtype=np.float64)
 	df_vals = np.arange(-freq_search_hz, freq_search_hz + 1e-9, freq_step_hz, dtype=np.float64)
-	ctweaks = [np.cos(-2.0 * np.pi * df * n / fs2) - 1j * np.sin(-2.0 * np.pi * df * n / fs2) for df in df_vals]
+	if df_vals.size == 0:
+		df_vals = np.array([0.0], dtype=np.float64)
+	ctweaks = (np.cos(-2.0 * np.pi * df_vals[:, None] * n[None, :] / fs2)
+		      - 1j * np.sin(-2.0 * np.pi * df_vals[:, None] * n[None, :] / fs2))
 
-	# Time offsets in downsampled samples (5 ms per step at 200 Hz)
 	tsamp = int(round(time_step_ms * fs2 / 1000.0))
 	max_tsamp = int(round(time_search_ms * fs2 / 1000.0))
-	time_offsets = list(range(-max_tsamp, max_tsamp + 1, tsamp))
+	if tsamp <= 0:
+		tsamp = 1
+	time_offsets = np.arange(-max_tsamp, max_tsamp + 1, tsamp, dtype=np.int64)
+	if time_offsets.size == 0:
+		time_offsets = np.array([0], dtype=np.int64)
 
-	best_score = -1e300
-	best_df = 0.0
-	best_off = 0
+	L = sym_len
+	N = int(y2.size)
+	num_frames = max(0, N - L + 1)
+	if num_frames <= 0:
+		return 0, 0.0, -1e30
+	frames = as_strided(y2, shape=(num_frames, L), strides=(y2.strides[0], y2.strides[0]))
 
 	sync_starts = (0, 36, 72)
-	for df, ctweak in zip(df_vals, ctweaks):
-		for off in time_offsets:
-			T = 0.0
-			cnt = 0
-			for m in sync_starts:
-				for k in range(LENGTH_SYNC):
-					tone = FT8_COSTAS_PATTERN[k]
-					pos = pos0_2 + off + (m + k) * sym_len
-					if pos < 0 or pos + sym_len > y2.size:
-						continue
-					seg = y2[pos: pos + sym_len]
-					segw = win * seg * ctweak
-					# signal energy at expected tone
-					zc = np.vdot(segw, ctones[:, tone])
-					Es = float((zc.real * zc.real + zc.imag * zc.imag))
-					# noise proxy from adjacent tones within bank
-					tm = max(0, tone - 1)
-					tp = min(7, tone + 1)
-					zm = np.vdot(segw, ctones[:, tm])
-					zp = np.vdot(segw, ctones[:, tp])
-					En = 0.5 * float((zm.real * zm.real + zm.imag * zm.imag) + (zp.real * zp.real + zp.imag * zp.imag))
-					T += Es / (En + 1e-20)
-					cnt += 1
-			if cnt > 0 and T > best_score:
-				best_score = T
-				best_df = float(df)
-				best_off = int(off)
+	sym_rel = []
+	for m in sync_starts:
+		for k in range(LENGTH_SYNC):
+			sym_rel.append((m + k) * L)
+	sym_rel = np.array(sym_rel, dtype=np.int64)
 
+	starts = pos0_2 + time_offsets[:, None] + sym_rel[None, :]
+	valid = (starts >= 0) & (starts < num_frames)
+	starts_clipped = np.clip(starts, 0, max(0, num_frames - 1))
+
+	X = frames[starts_clipped]
+	Xw = X * win[None, None, :]
+	Y = (Xw[None, :, :, :] * ctweaks[:, None, None, :]).conj()
+	Z = np.einsum('d o s n, n k -> d o s k', Y, ctones, optimize=True)
+	E = (Z.real * Z.real + Z.imag * Z.imag)
+
+	expected = np.array([FT8_COSTAS_PATTERN[k] for _m in sync_starts for k in range(LENGTH_SYNC)], dtype=np.int64)
+	tm = np.maximum(expected - 1, 0)
+	tp = np.minimum(expected + 1, 7)
+	idx_exp = expected[None, None, :, None]
+	idx_tm = tm[None, None, :, None]
+	idx_tp = tp[None, None, :, None]
+	E_exp = np.take_along_axis(E, idx_exp, axis=3)[..., 0]
+	E_m = np.take_along_axis(E, idx_tm, axis=3)[..., 0]
+	E_p = np.take_along_axis(E, idx_tp, axis=3)[..., 0]
+	En = 0.5 * (E_m + E_p)
+
+	valid_f = valid.astype(np.float64)[None, :, :]
+	scores = (E_exp / (En + 1e-20)) * valid_f
+	cnts = np.sum(valid_f, axis=2)
+	cnts = np.maximum(cnts, 1.0)
+	T = np.sum(scores, axis=2) / cnts
+
+	best_flat = int(np.argmax(T))
+	best_d, best_o = np.unravel_index(best_flat, T.shape)
+	best_score = float(T[best_d, best_o])
+	best_df = float(df_vals[best_d])
+	best_off = int(time_offsets[best_o])
 	return best_off, best_df, best_score
 
 
@@ -158,31 +212,34 @@ def coherent_symbol_energies(
 	df_hz: float,
 	symbol_indices: List[int],
 ) -> np.ndarray:
-	"""Return energies array of shape [len(symbol_indices), 8] via coherent demod at refined CFO.
+	"""Vectorized coherent energies for a set of symbol indices.
+
+	Returns [num_symbols, 8] energies.
 	"""
 	sym_len = int(round(SYMBOL_PERIOD_S * fs2))
+	if sym_len <= 0 or y2.size < sym_len or not symbol_indices:
+		return np.zeros((0, 8), dtype=np.float64)
 	ctones = _precompute_ctones(sym_len, fs2)
 	n = np.arange(sym_len, dtype=np.float64)
 	ctweak = np.cos(-2.0 * np.pi * df_hz * n / fs2) - 1j * np.sin(-2.0 * np.pi * df_hz * n / fs2)
-	# Use rectangular window for symbol integration
 	win = np.ones(sym_len, dtype=np.float64)
 	win /= np.sqrt(np.sum(win ** 2))
 
-	E = np.zeros((len(symbol_indices), 8), dtype=np.float64)
-	for i, t in enumerate(symbol_indices):
-		pos = pos0_2 + t * sym_len
-		if pos < 0 or pos + sym_len > y2.size:
-			continue
-		seg = y2[pos: pos + sym_len]
-		segw = win * seg * ctweak
-		den = float(np.vdot(segw, segw).real)
-		if not np.isfinite(den) or den <= 1e-20:
-			den = 1.0
-		# energies for 8 tones
-		for tone in range(8):
-			z = np.vdot(segw, ctones[:, tone])
-			E[i, tone] = float((z.real * z.real + z.imag * z.imag)) / den
-	return E
+	starts = np.array([pos0_2 + t * sym_len for t in symbol_indices], dtype=np.int64)
+	valid = (starts >= 0) & (starts + sym_len <= y2.size)
+	if not np.any(valid):
+		return np.zeros((0, 8), dtype=np.float64)
+	starts_valid = starts[valid]
+	frames = as_strided(y2, shape=(y2.size - sym_len + 1, sym_len), strides=(y2.strides[0], y2.strides[0]))
+	S = frames[starts_valid]
+	Sw = S * (win * ctweak)[None, :]
+	den = np.sum(Sw.real * Sw.real + Sw.imag * Sw.imag, axis=1)
+	den = np.where((den > 1e-20) & np.isfinite(den), den, 1.0)
+	Z = np.einsum('s n, n k -> s k', Sw.conj(), ctones, optimize=True)
+	E = (Z.real * Z.real + Z.imag * Z.imag) / den[:, None]
+	out = np.zeros((len(symbol_indices), 8), dtype=np.float64)
+	out[np.where(valid)[0]] = E
+	return out
 
 
 def _costas_snr_score(
@@ -332,7 +389,7 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDe
 	results: List[CandidateDecode] = []
 
 	# Run STFT-based candidate search across the whole buffer
-	candidates, stft_nfft, hop = find_sync_candidates_stft(samples, sample_rate_hz, top_k=80)
+	candidates, stft_nfft, hop = find_sync_candidates_stft(samples, sample_rate_hz, top_k=40)
 
 	# Process top candidates with fine refinement and coherent demod
 	for cand in candidates:
