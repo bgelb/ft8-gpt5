@@ -7,6 +7,7 @@ from numpy.typing import NDArray
 
 from .constants import LENGTH_SYNC, NUM_SYNC, SYNC_OFFSET, FT8_COSTAS_PATTERN, FSK_TONES, SYMBOL_PERIOD_S
 from scipy.signal import get_window
+from numpy.lib.stride_tricks import as_strided
 
 
 """
@@ -40,30 +41,20 @@ def _compute_stft_magnitude_db(signal: NDArray[np.float64], sample_rate_hz: floa
     win = get_window("hann", n_fft, fftbins=True).astype(np.float64)
     win /= np.sqrt(np.sum(win ** 2))
 
-    n = signal.size
-    if n < n_fft:
-        # zero-pad to at least one frame
-        pad = np.pad(signal, (0, n_fft - n))
-        n = pad.size
-        x = pad
-    else:
-        x = signal
-
+    x = signal if signal.size >= n_fft else np.pad(signal, (0, n_fft - signal.size))
+    n = x.size
     num_frames = 1 + max(0, (n - n_fft) // hop)
-    mags = np.empty((num_frames, n_fft // 2 + 1), dtype=np.float64)
-    for i in range(num_frames):
-        i0 = i * hop
-        seg = x[i0 : i0 + n_fft]
-        if seg.size < n_fft:
-            seg = np.pad(seg, (0, n_fft - seg.size))
-        sw = seg * win
-        spec = np.fft.rfft(sw)
-        m = np.abs(spec).astype(np.float64)
-        # Simple per-frame noise normalization for better contrast
-        m = np.maximum(m, 1e-12)
-        med = np.median(m)
-        m = np.maximum(m - med, 1e-12)
-        mags[i] = 20.0 * np.log10(m)
+    if num_frames <= 0:
+        return np.zeros((0, n_fft // 2 + 1), dtype=np.float64), n_fft, hop
+    # Build strided frame matrix [num_frames, n_fft]
+    frames = as_strided(x, shape=(num_frames, n_fft), strides=(x.strides[0] * hop, x.strides[0]))
+    frames_w = frames * win[None, :]
+    spec = np.fft.rfft(frames_w, axis=1)
+    m = np.abs(spec).astype(np.float64)
+    m = np.maximum(m, 1e-12)
+    med = np.median(m, axis=1, keepdims=True)
+    m = np.maximum(m - med, 1e-12)
+    mags = 20.0 * np.log10(m)
 
     return mags, n_fft, hop
 
@@ -106,40 +97,93 @@ def find_sync_candidates_stft(signal: NDArray[np.float64], sample_rate_hz: float
     if max_start_frame <= 0:
         return ([], n_fft, hop)
 
-    candidates: List[StftCandidate] = []
+    # Build per-start frame offsets for the 3x7 Costas symbols
+    offs = np.array([SYNC_OFFSET * m + k for m in range(NUM_SYNC) for k in range(LENGTH_SYNC)], dtype=np.int64)
+    offs *= frames_per_symbol  # in frames
+    tone_idx = np.array([FT8_COSTAS_PATTERN[k] for _m in range(NUM_SYNC) for k in range(LENGTH_SYNC)], dtype=np.int64)
 
-    def score_at(bank: NDArray[np.float64], base_limit: int, frac_val: float) -> None:
-        for t0 in range(0, max_start_frame):
-            # Times for the three sync blocks and their 7 symbols
-            score_row = 0.0
-            count = 0
-            for base_idx in range(base_limit):
-                # Accumulate Costas energies across three blocks
-                score = 0.0
-                cnt = 0
-                for m in range(NUM_SYNC):
-                    base_frame = t0 + (SYNC_OFFSET * m) * frames_per_symbol
-                    for k in range(LENGTH_SYNC):
-                        f = base_frame + k * frames_per_symbol
-                        if f < 0 or f >= num_frames:
-                            continue
-                        tone = FT8_COSTAS_PATTERN[k]
-                        score += float(bank[f, base_idx, tone])
-                        cnt += 1
-                if cnt > 0:
-                    # Use linear power already; keep score linear
-                    candidates.append(StftCandidate(frame_start=t0, base_bin=base_idx, frac=frac_val, score=score / cnt))
+    def score_grid(bank: NDArray[np.float64], base_limit: int) -> NDArray[np.float64]:
+        if base_limit <= 0:
+            return np.zeros((0, 0), dtype=np.float64)
+        grid = np.full((max_start_frame, base_limit), -1e30, dtype=np.float64)
+        # For each candidate start t0, gather 21 frames and sum expected tones
+        for t0 in range(max_start_frame):
+            frames = t0 + offs  # shape [21]
+            valid = (frames >= 0) & (frames < num_frames)
+            if not np.any(valid):
+                continue
+            frames = np.clip(frames, 0, num_frames - 1)
+            # bank[frames] -> [21, base_limit, 8]
+            B = bank[frames, :base_limit, :]
+            # select expected tones -> [21, base_limit]
+            E = np.take_along_axis(B, tone_idx[:, None, None], axis=2)[..., 0]
+            mask = valid[:, None].astype(np.float64)
+            s = (E * mask).sum(axis=0)
+            c = mask.sum(axis=0)
+            c = np.maximum(c, 1.0)
+            grid[t0, :] = s / c
+        return grid
 
-    # Integer bins
-    if num_bases > 0:
-        score_at(bank0, num_bases, 0.0)
-    # Half-bin bins
-    if num_bases_half > 0:
-        score_at(bankh, num_bases_half, 0.5)
+    grid0 = score_grid(bank0, num_bases)
+    gridh = score_grid(bankh, num_bases_half)
 
-    candidates.sort(key=lambda c: c.score, reverse=True)
+    def peaks_along_bases(grid: NDArray[np.float64]) -> NDArray[np.bool_]:
+        """Detect local maxima along the base-bin axis per time frame.
+
+        A peak at (t, k) satisfies grid[t, k] > grid[t, k-1] and grid[t, k] > grid[t, k+1].
+        """
+        if grid.size == 0:
+            return np.zeros_like(grid, dtype=bool)
+        H, W = grid.shape
+        if W < 3 or H == 0:
+            return np.zeros_like(grid, dtype=bool)
+        left = grid[:, :-2]
+        center = grid[:, 1:-1]
+        right = grid[:, 2:]
+        mask_mid = (center > left) & (center > right)
+        peaks = np.zeros_like(grid, dtype=bool)
+        peaks[:, 1:-1] = mask_mid
+        return peaks
+
+    cand_list: List[StftCandidate] = []
+    if grid0.size:
+        peaks0 = peaks_along_bases(grid0)
+        ys, xs = np.nonzero(peaks0)
+        for y, x in zip(ys.tolist(), xs.tolist()):
+            cand_list.append(StftCandidate(frame_start=int(y), base_bin=int(x), frac=0.0, score=float(grid0[y, x])))
+    if gridh.size:
+        peaksh = peaks_along_bases(gridh)
+        ys, xs = np.nonzero(peaksh)
+        for y, x in zip(ys.tolist(), xs.tolist()):
+            cand_list.append(StftCandidate(frame_start=int(y), base_bin=int(x), frac=0.5, score=float(gridh[y, x])))
+
+    # Fallback: if no peaks are found (e.g., flat spectra), take best-scoring candidates directly
+    if not cand_list:
+        items: List[Tuple[float, int, int, float]] = []  # (score, y, x, frac)
+        if grid0.size:
+            # Exclude edge bases to mimic peak constraint
+            g = grid0.copy()
+            if g.shape[1] >= 2:
+                g[:, 0] = -1e30
+                g[:, -1] = -1e30
+            ys, xs = np.unravel_index(np.argsort(g, axis=None)[-max(1, (top_k or 50)) :], g.shape)
+            for s, y, x in zip(g[ys, xs], ys, xs):
+                items.append((float(s), int(y), int(x), 0.0))
+        if gridh.size:
+            gh = gridh.copy()
+            if gh.shape[1] >= 2:
+                gh[:, 0] = -1e30
+                gh[:, -1] = -1e30
+            ys, xs = np.unravel_index(np.argsort(gh, axis=None)[-max(1, (top_k or 50)) :], gh.shape)
+            for s, y, x in zip(gh[ys, xs], ys, xs):
+                items.append((float(s), int(y), int(x), 0.5))
+        items.sort(key=lambda t: t[0], reverse=True)
+        for s, y, x, frac in items[: (top_k or 50)]:
+            cand_list.append(StftCandidate(frame_start=y, base_bin=x, frac=frac, score=s))
+
+    cand_list.sort(key=lambda c: c.score, reverse=True)
     if top_k is not None and top_k > 0:
-        candidates = candidates[:top_k]
-    return (candidates, n_fft, hop)
+        cand_list = cand_list[:top_k]
+    return (cand_list, n_fft, hop)
 
 

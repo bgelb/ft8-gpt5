@@ -50,6 +50,20 @@ Notes:
 - GitHub Actions runs the test suite on push/PR.
 - Regression and performance guardrails ensure no decode-rate or runtime regressions.
 
+## Performance
+
+- Baseline silent 15 s decode runtime: ~7.4–8.9 s on Apple Silicon (before).
+- Current runtime: ~0.9–1.0 s for a 15 s silent sample on the same machine.
+- Changes that enabled the speedup:
+  - Peak-only candidate selection along base-bin axis (+ fallback to best scores).
+  - Vectorized STFT via strided framing + batched rFFT with per-frame median normalization.
+  - Vectorized fine sync refinement on a pre-decimated buffer (time/CFO grid in NumPy).
+  - Vectorized coherent symbol-energy computation (einsum over tone bank).
+  - Cached IIR decimator (Chebyshev-I SOS) with zero-phase `sosfiltfilt` and stride decimation.
+  - Reduced downstream candidate count (`top_k=40`).
+
+Numbers will vary by platform and input contents; the above measurements were produced with Python 3.12 and pinned NumPy/SciPy wheels using `./scripts/setup_env.sh`.
+
 ## Status and next steps
 - Strong-signal decode validated end-to-end (coherent demod → LDPC → CRC) on synthetic and real samples. A deterministic dataset test (`20m_busy/test_04.wav`) passes with an exact text match.
 - Bit mapping aligned to the FT8 spec (a91 = first 91 bits post-LDPC); we also try the systematic mapping for internal synthetic compatibility.
