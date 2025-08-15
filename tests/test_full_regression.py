@@ -103,9 +103,8 @@ def test_full_dataset_nonregression():
         f"neg_expected={total_neg_expected} neg_falsepos={total_neg_violated} neg_ok_rate={neg_ok_rate_total:.1%}"
     )
 
-    # Baseline thresholds are permissive initially; to be ratcheted up over time
-    assert pos_rate_total >= 0.0
-    assert neg_ok_rate_total >= 0.0
+    # Ratchet: require at least one exact-text, CRC-valid decode overall
+    assert total_pos_matched >= 1, "expected at least one matched decode in full dataset"
 
     # Runtime guardrail: average < 5s per 15s sample on CI
     avg_runtime = (t1 - t0) / max(1, len(wavs))
