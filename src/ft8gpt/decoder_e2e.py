@@ -185,6 +185,45 @@ def coherent_symbol_energies(
 	return E
 
 
+def _costas_snr_score(
+	y2: np.ndarray,
+	fs2: float,
+	pos0_2: int,
+	df_hz: float,
+) -> float:
+	"""Compute noise-normalized Costas correlation energy across 3 sync blocks.
+
+	Uses the same SNR-like metric as refine_sync_fine, with rectangular window and adjacent-tone noise proxy.
+	"""
+	sym_len = int(round(SYMBOL_PERIOD_S * fs2))
+	ctones = _precompute_ctones(sym_len, fs2)
+	n = np.arange(sym_len, dtype=np.float64)
+	ctweak = np.cos(-2.0 * np.pi * df_hz * n / fs2) - 1j * np.sin(-2.0 * np.pi * df_hz * n / fs2)
+	win = np.ones(sym_len, dtype=np.float64)
+	win /= np.sqrt(np.sum(win ** 2))
+
+	T = 0.0
+	cnt = 0
+	for m in (0, 36, 72):
+		for k in range(LENGTH_SYNC):
+			tone = FT8_COSTAS_PATTERN[k]
+			pos = pos0_2 + (m + k) * sym_len
+			if pos < 0 or pos + sym_len > y2.size:
+				continue
+			segw = win * y2[pos: pos + sym_len] * ctweak
+			zc = np.vdot(segw, ctones[:, tone])
+			Es = float((zc.real * zc.real + zc.imag * zc.imag))
+			# adjacent tones as noise proxy
+			tm = max(0, tone - 1)
+			tp = min(7, tone + 1)
+			zm = np.vdot(segw, ctones[:, tm])
+			zp = np.vdot(segw, ctones[:, tp])
+			En = 0.5 * float((zm.real * zm.real + zm.imag * zm.imag) + (zp.real * zp.real + zp.imag * zp.imag))
+			T += Es / (En + 1e-20)
+			cnt += 1
+	return T if cnt > 0 else -1e300
+
+
 def count_costas_matches(E_sync: np.ndarray) -> int:
 	"""Count how many of the 21 sync symbols have argmax matching the Costas tone."""
 	matches = 0
@@ -339,47 +378,54 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDe
 		if count_costas_matches(sync_E) < 18:
 			continue
 
-		# Micro-refine CFO and time during data demod and attempt LDPC decode and hard-decision CRC
-		best_found = False
-		# Small micro-search around refined CFO and time (200 Hz domain)
+		# Micro-refine alignment using Costas SNR as objective (do not use bit matches)
+		best_snr = -1e300
+		best_pos = pos0_2
+		best_df = df_hz
 		cfo_grid = np.arange(df_hz - 0.8, df_hz + 0.8001, 0.2, dtype=np.float64)
-		time_grid = (-1, 0, 1)
-		for toff in time_grid:
-			for df in cfo_grid:
-				E = coherent_symbol_energies(y2, fs2, pos0_2 + int(toff), df, data_times_rel)
-				# LLR path
-				llrs: List[float] = []
-				for row in E:
-					l2, l1, l0 = _llrs_from_linear_energies_gray_groups(row)
-					llrs.extend([l2, l1, l0])
-				llrs_arr = np.array(llrs[:174], dtype=np.float64)
-				_normalize_llrs_inplace(llrs_arr)
-				errors, bits = min_sum_decode(llrs_arr, Mn, Nm, config)
-				if bits.shape[0] >= 91 and errors == 0:
-					a91 = bits[:91].astype(np.uint8)
-					bits_with_crc = np.concatenate([a91[:77], a91[77:91]])
-					if crc14_check(bits_with_crc):
-						results.append(CandidateDecode(start_symbol=0, ldpc_errors=errors, bits_with_crc=bits_with_crc))
-						best_found = True
-						break
-				# Hard-decision fallback for strong signals
-				cw_bits: List[int] = []
-				for row in E:
-					tone = int(np.argmax(row))
-					b2, b1, b0 = gray_to_bits(tone)
-					cw_bits.extend([b2, b1, b0])
-				cw = np.array(cw_bits[:174], dtype=np.uint8)
-				if cw.shape[0] == 174:
-					a91_hd = cw[:91].astype(np.uint8)
-					bits_with_crc_hd = np.concatenate([a91_hd[:77], a91_hd[77:91]])
-					if crc14_check(bits_with_crc_hd):
-						results.append(CandidateDecode(start_symbol=0, ldpc_errors=0, bits_with_crc=bits_with_crc_hd))
-						best_found = True
-						break
-			if best_found:
-				break
-		if best_found and len(results) >= 10:
-			return results
+		# Explore small offsets: integer symbol shifts ±3 and sample offsets ±8
+		sym_len2 = int(round(SYMBOL_PERIOD_S * fs2))
+		for sym_shift in range(-3, 4):
+			base_pos = pos0_2 + sym_shift * sym_len2
+			for samp_shift in range(-8, 9):
+				pos_try = base_pos + int(samp_shift)
+				for df_try in cfo_grid:
+					S = _costas_snr_score(y2, fs2, pos_try, float(df_try))
+					if S > best_snr:
+						best_snr = S
+						best_pos = pos_try
+						best_df = float(df_try)
+
+		# With the best Costas alignment, demod and attempt LDPC and CRC
+		E = coherent_symbol_energies(y2, fs2, best_pos, best_df, data_times_rel)
+		llrs: List[float] = []
+		for row in E:
+			l2, l1, l0 = _llrs_from_linear_energies_gray_groups(row)
+			llrs.extend([l2, l1, l0])
+		llrs_arr = np.array(llrs[:174], dtype=np.float64)
+		_normalize_llrs_inplace(llrs_arr)
+		errors, bits = min_sum_decode(llrs_arr, Mn, Nm, config)
+		if bits.shape[0] >= 91 and errors == 0:
+			a91 = bits[:91].astype(np.uint8)
+			bits_with_crc = np.concatenate([a91[:77], a91[77:91]])
+			if crc14_check(bits_with_crc):
+				results.append(CandidateDecode(start_symbol=0, ldpc_errors=errors, bits_with_crc=bits_with_crc))
+				if len(results) >= 10:
+					return results
+		# Also try hard-decision once at the best alignment for robustness
+		cw_bits: List[int] = []
+		for row in E:
+			tone = int(np.argmax(row))
+			b2, b1, b0 = gray_to_bits(tone)
+			cw_bits.extend([b2, b1, b0])
+		cw = np.array(cw_bits[:174], dtype=np.uint8)
+		if cw.shape[0] == 174:
+			a91_hd = cw[:91].astype(np.uint8)
+			bits_with_crc_hd = np.concatenate([a91_hd[:77], a91_hd[77:91]])
+			if crc14_check(bits_with_crc_hd):
+				results.append(CandidateDecode(start_symbol=0, ldpc_errors=0, bits_with_crc=bits_with_crc_hd))
+				if len(results) >= 10:
+					return results
 	return results
 
 
