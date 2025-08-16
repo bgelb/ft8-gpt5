@@ -74,7 +74,7 @@ def test_short_dataset_regression_20pct():
 	print(f"SHORT TOTAL: pos_expected={total_pos_expected} pos_matched={total_pos_matched}")
 
 	# Ratchet for CI: require at least one exact-text, CRC-valid decode across the 20% sample
-	assert total_pos_matched >= 1, "expected at least one matched decode in 20% short regression"
+	assert total_pos_matched >= 10, "expected at least ten matched decodes in 20% short regression"
 
 	# Keep runtime guardrail similar to full test but this sample should be much faster
 	avg_runtime = (time.time() - t0) / max(1, len(sample))

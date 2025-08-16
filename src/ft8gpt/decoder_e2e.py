@@ -387,9 +387,11 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDe
 	Br_inv, Hrest, rest_cols, piv_cols = get_encoder_structures()
 
 	results: List[CandidateDecode] = []
+	# Track unique decodes by packed bits to avoid duplicates across candidates
+	seen_keys = set()
 
 	# Run STFT-based candidate search across the whole buffer
-	candidates, stft_nfft, hop = find_sync_candidates_stft(samples, sample_rate_hz, top_k=40)
+	candidates, stft_nfft, hop = find_sync_candidates_stft(samples, sample_rate_hz, top_k=80)
 
 	# Process top candidates with fine refinement and coherent demod
 	for cand in candidates:
@@ -467,14 +469,44 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDe
 			a91_ref = bits[:91].astype(np.uint8)
 			bwc_ref = np.concatenate([a91_ref[:77], a91_ref[77:91]])
 			if crc14_check(bwc_ref):
-				results.append(CandidateDecode(start_symbol=0, ldpc_errors=errors, bits_with_crc=bwc_ref))
-				return results
+				key = np.packbits(bwc_ref).tobytes()
+				if key not in seen_keys:
+					seen_keys.add(key)
+					results.append(CandidateDecode(start_symbol=0, ldpc_errors=errors, bits_with_crc=bwc_ref))
 			# Also try encoder-derived systematic mapping (compat with internal synthetic)
 			a91_sys = bits[np.array(rest_cols, dtype=np.int64)].astype(np.uint8)
 			bwc_sys = np.concatenate([a91_sys[:77], a91_sys[77:91]])
 			if crc14_check(bwc_sys):
-				results.append(CandidateDecode(start_symbol=0, ldpc_errors=errors, bits_with_crc=bwc_sys))
-				return results
+				key = np.packbits(bwc_sys).tobytes()
+				if key not in seen_keys:
+					seen_keys.add(key)
+					results.append(CandidateDecode(start_symbol=0, ldpc_errors=errors, bits_with_crc=bwc_sys))
+		# If not successful, try alternative LLR computation (max-of-groups)
+		if not results:
+			llrs_alt: List[float] = []
+			for row in E:
+				b2, b1, b0 = _llrs_from_linear_energies_gray_groups_max(row)
+				llrs_alt.extend([b2, b1, b0])
+			llrs_alt_arr = np.array(llrs_alt[:174], dtype=np.float64)
+			_normalize_llrs_inplace(llrs_alt_arr)
+			errors2, bits2 = min_sum_decode(llrs_alt_arr, Mn, Nm, config)
+			if bits2.shape[0] >= 91 and errors2 == 0:
+				# Reference mapping
+				a91_ref2 = bits2[:91].astype(np.uint8)
+				bwc_ref2 = np.concatenate([a91_ref2[:77], a91_ref2[77:91]])
+				if crc14_check(bwc_ref2):
+					key = np.packbits(bwc_ref2).tobytes()
+					if key not in seen_keys:
+						seen_keys.add(key)
+						results.append(CandidateDecode(start_symbol=0, ldpc_errors=errors2, bits_with_crc=bwc_ref2))
+				# Systematic mapping
+				a91_sys2 = bits2[np.array(rest_cols, dtype=np.int64)].astype(np.uint8)
+				bwc_sys2 = np.concatenate([a91_sys2[:77], a91_sys2[77:91]])
+				if crc14_check(bwc_sys2):
+					key = np.packbits(bwc_sys2).tobytes()
+					if key not in seen_keys:
+						seen_keys.add(key)
+						results.append(CandidateDecode(start_symbol=0, ldpc_errors=errors2, bits_with_crc=bwc_sys2))
 		# Also try hard-decision once at the best alignment for robustness
 		cw_bits: List[int] = []
 		for row in E:
@@ -487,14 +519,18 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDe
 			a91_hd_ref = cw[:91].astype(np.uint8)
 			bwc_hd_ref = np.concatenate([a91_hd_ref[:77], a91_hd_ref[77:91]])
 			if crc14_check(bwc_hd_ref):
-				results.append(CandidateDecode(start_symbol=0, ldpc_errors=0, bits_with_crc=bwc_hd_ref))
-				return results
+				key = np.packbits(bwc_hd_ref).tobytes()
+				if key not in seen_keys:
+					seen_keys.add(key)
+					results.append(CandidateDecode(start_symbol=0, ldpc_errors=0, bits_with_crc=bwc_hd_ref))
 			# Systematic mapping compatibility
 			a91_hd_sys = cw[np.array(rest_cols, dtype=np.int64)].astype(np.uint8)
 			bwc_hd_sys = np.concatenate([a91_hd_sys[:77], a91_hd_sys[77:91]])
 			if crc14_check(bwc_hd_sys):
-				results.append(CandidateDecode(start_symbol=0, ldpc_errors=0, bits_with_crc=bwc_hd_sys))
-				return results
+				key = np.packbits(bwc_hd_sys).tobytes()
+				if key not in seen_keys:
+					seen_keys.add(key)
+					results.append(CandidateDecode(start_symbol=0, ldpc_errors=0, bits_with_crc=bwc_hd_sys))
 	return results
 
 
