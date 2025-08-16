@@ -30,7 +30,7 @@ def extract_symbol_llrs_gray_lse(mag_bins: NDArray[np.float64]) -> Tuple[float, 
         e0 = float(mag_bins[tone])
         em = float(mag_bins[tone - 1]) if tone - 1 >= 0 else 0.0
         ep = float(mag_bins[tone + 1]) if tone + 1 < 8 else 0.0
-        s[j] = max(e0, em, ep, 1e-20)
+        s[j] = max(e0, 0.5 * em, 0.5 * ep, 1e-20)
 
     # Bit grouping in Gray-index space j ∈ [0..7]
     g2_0 = (0, 1, 2, 3); g2_1 = (4, 5, 6, 7)
