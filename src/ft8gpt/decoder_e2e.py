@@ -41,7 +41,7 @@ def llrs_from_waterfall(wf_group: np.ndarray) -> np.ndarray:
 	# wf_group shape [num_symbols, 8]
 	llrs: List[float] = []
 	for s in range(wf_group.shape[0]):
-		l0, l1, l2 = extract_symbol_llrs(wf_group[s])
+		l2, l1, l0 = extract_symbol_llrs(wf_group[s])
 		# Encoder packs bits per symbol as (b2,b1,b0); order LLRs accordingly
 		llrs.extend([l2, l1, l0])
 	return np.array(llrs[: 174], dtype=np.float64)
