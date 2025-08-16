@@ -29,16 +29,17 @@ class StftCandidate:
     score: float
 
 
-def _compute_stft_magnitude_db(signal: NDArray[np.float64], sample_rate_hz: float) -> Tuple[NDArray[np.float64], int, int]:
+def _compute_stft_power_linear(signal: NDArray[np.float64], sample_rate_hz: float) -> Tuple[NDArray[np.float64], int, int]:
     """
-    Compute a tapered STFT magnitude spectrogram in dB with Hann window and hop ≈ T/2.
+    Compute a tapered STFT power spectrogram in linear units with Hann window and hop ≈ T/2.
 
-    Returns (mags_db, n_fft, hop) where mags_db has shape [num_frames, n_fft//2+1].
+    Returns (power, n_fft, hop) where power has shape [num_frames, n_fft//2+1].
     """
     n_fft = int(round(sample_rate_hz * SYMBOL_PERIOD_S))
     n_fft = max(16, n_fft)
     hop = max(1, n_fft // 2)
     win = get_window("hann", n_fft, fftbins=True).astype(np.float64)
+    # Normalize window to unit RMS to keep power scales stable across n_fft
     win /= np.sqrt(np.sum(win ** 2))
 
     x = signal if signal.size >= n_fft else np.pad(signal, (0, n_fft - signal.size))
@@ -50,13 +51,13 @@ def _compute_stft_magnitude_db(signal: NDArray[np.float64], sample_rate_hz: floa
     frames = as_strided(x, shape=(num_frames, n_fft), strides=(x.strides[0] * hop, x.strides[0]))
     frames_w = frames * win[None, :]
     spec = np.fft.rfft(frames_w, axis=1)
-    m = np.abs(spec).astype(np.float64)
-    m = np.maximum(m, 1e-12)
-    med = np.median(m, axis=1, keepdims=True)
-    m = np.maximum(m - med, 1e-12)
-    mags = 20.0 * np.log10(m)
+    # Linear power
+    p = (spec.real ** 2 + spec.imag ** 2).astype(np.float64)
+    # Robust per-frame noise floor removal in linear domain
+    med = np.median(p, axis=1, keepdims=True)
+    p = np.maximum(p - med, 0.0)
 
-    return mags, n_fft, hop
+    return p, n_fft, hop
 
 
 def find_sync_candidates_stft(signal: NDArray[np.float64], sample_rate_hz: float, top_k: int = 300) -> Tuple[List[StftCandidate], int, int]:
@@ -66,11 +67,8 @@ def find_sync_candidates_stft(signal: NDArray[np.float64], sample_rate_hz: float
 
     Returns (candidates, n_fft, hop).
     """
-    mags_db, n_fft, hop = _compute_stft_magnitude_db(signal, sample_rate_hz)
-    num_frames, num_bins = mags_db.shape
-
-    # Prepare linear power for fractional-bin interpolation
-    pwr = 10.0 ** (mags_db / 10.0)
+    pwr, n_fft, hop = _compute_stft_power_linear(signal, sample_rate_hz)
+    num_frames, num_bins = pwr.shape
 
     # Integer-aligned 8-tone groups
     num_bases = max(0, num_bins - FSK_TONES)

@@ -14,4 +14,4 @@ __pycache__/
 venv/
 
 # Local audio artifacts
-/*.wav
+/*.wav.tmp/
