@@ -23,11 +23,18 @@ jobs:
       contents: read
       checks: write
       pull-requests: write
+      issues: write
     steps:
       - name: Checkout repository (with submodules)
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          lfs: true
+
+      - name: Fetch Git LFS for submodules
+        run: |
+          git lfs install
+          git submodule foreach --recursive 'git lfs install && git lfs pull && git lfs checkout || true'
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -68,10 +75,51 @@ jobs:
           make -C external/ft8_lib clean
           make -C external/ft8_lib decode_ft8 CFLAGS="-D_DARWIN_C_SOURCE -D_POSIX_C_SOURCE=200809L" LDFLAGS="" LDLIBS="-lm"
 
+      - name: Ensure test WAV dataset present
+        run: |
+          mkdir -p reports
+          git -C external/ft8_lib lfs pull || true
+          git -C external/ft8_lib lfs checkout || true
+          count=$(find external/ft8_lib/test/wav -type f -name '*.wav' 2>/dev/null | wc -l | tr -d ' ')
+          echo "$count" > reports/short_wav_count.txt
+          echo "Short dataset wav files: $count"
+
       - name: Run tests
         run: |
           mkdir -p reports
-          pytest -vv -ra --durations=0 --maxfail=1 --color=yes --capture=tee-sys --junitxml=reports/junit.xml --log-file=reports/pytest.log --log-file-level=INFO
+          set -o pipefail
+          export SHORT_SUMMARY_PATH=reports/short_summary.txt
+          pytest -vv -ra --durations=0 --maxfail=1 --color=yes --capture=tee-sys --junitxml=reports/junit.xml --log-file=reports/pytest.log --log-file-level=INFO 2>&1 | tee reports/pytest.out
+
+      - name: Summarize short regression decodes
+        if: always()
+        run: |
+          echo "### Short Regression Decodes" >> "$GITHUB_STEP_SUMMARY"
+          src_file=""
+          if [ -f reports/pytest.out ]; then src_file=reports/pytest.out; elif [ -f reports/pytest.log ]; then src_file=reports/pytest.log; fi
+          wavs="unknown"
+          if [ -f reports/short_wav_count.txt ]; then wavs=$(cat reports/short_wav_count.txt); fi
+          if [ -n "$src_file" ]; then
+            line=$(grep -F "SHORT TOTAL:" "$src_file" | tail -n 1 || true)
+            if [ -n "$line" ]; then
+              pe=$(printf "%s" "$line" | sed -n 's/.*pos_expected=\([0-9][0-9]*\).*/\1/p')
+              pm=$(printf "%s" "$line" | sed -n 's/.*pos_matched=\([0-9][0-9]*\).*/\1/p')
+              if [ -n "$pe" ] && [ -n "$pm" ]; then
+                pct=$(awk -v pm="$pm" -v pe="$pe" 'BEGIN { if (pe>0) printf "%.1f", (pm/pe*100); }')
+                if [ -n "$pct" ]; then
+                  echo "Matched: ${pm} / ${pe} (${pct}%)" >> "$GITHUB_STEP_SUMMARY"
+                else
+                  echo "Matched: ${pm} / ${pe}" >> "$GITHUB_STEP_SUMMARY"
+                fi
+              else
+                echo "Totals line found, but could not parse numbers." >> "$GITHUB_STEP_SUMMARY"
+              fi
+            else
+              echo "Short regression totals not found in output (test may have been skipped). WAV files detected: $wavs" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo "Pytest output/log not found. WAV files detected: $wavs" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Upload test reports
         if: always()
@@ -87,5 +135,53 @@ jobs:
           files: reports/junit.xml
           github_token: ${{ secrets.GITHUB_TOKEN }}
           check_name: 'Unit Test Results'
+
+      - name: Update Unit Test Results comment with short regression
+        if: always() && github.event_name == 'pull_request' && runner.os == 'Linux'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Prefer machine-readable summary from the test
+          if [ -f reports/short_summary.txt ]; then
+            pe=$(sed -n 's/.*pos_expected=\([0-9][0-9]*\).*/\1/p' reports/short_summary.txt)
+            pm=$(sed -n 's/.*pos_matched=\([0-9][0-9]*\).*/\1/p' reports/short_summary.txt)
+          else
+            src_file=""
+            if [ -f reports/pytest.out ]; then src_file=reports/pytest.out; elif [ -f reports/pytest.log ]; then src_file=reports/pytest.log; fi
+            if [ -n "$src_file" ]; then
+              line=$(grep -F "SHORT TOTAL:" "$src_file" | tail -n 1 || true)
+              pe=$(printf "%s" "$line" | sed -n 's/.*pos_expected=\([0-9][0-9]*\).*/\1/p')
+              pm=$(printf "%s" "$line" | sed -n 's/.*pos_matched=\([0-9][0-9]*\).*/\1/p')
+            fi
+          fi
+
+          if [ -n "$pe" ] && [ -n "$pm" ]; then
+            pct=$(awk -v pm="$pm" -v pe="$pe" 'BEGIN { if (pe>0) printf "%.1f", (pm/pe*100); }')
+            if [ -n "$pct" ]; then
+              line="Short Regression Decodes: Matched: ${pm} / ${pe} (${pct}%)"
+            else
+              line="Short Regression Decodes: Matched: ${pm} / ${pe}"
+            fi
+          else
+            wavs="unknown"
+            if [ -f reports/short_wav_count.txt ]; then wavs=$(cat reports/short_wav_count.txt); fi
+            line="Short Regression Decodes: not available (WAV files detected: $wavs)"
+          fi
+
+          pr_number=${{ github.event.number }}
+          repo=${{ github.repository }}
+          # Find the Unit Test Results comment from the unit test results action
+          utr_id=$(gh api repos/$repo/issues/$pr_number/comments --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | contains("Unit Test Results")) | .id' | head -n1 || true)
+          if [ -z "$utr_id" ]; then
+            echo "No Unit Test Results comment found; skipping append."
+            exit 0
+          fi
+
+          body=$(gh api repos/$repo/issues/comments/$utr_id --jq .body)
+          new_block="<!-- SHORT-REG-START -->\n${line}\n<!-- SHORT-REG-END -->"
+          # Remove existing block if present, then append the new block at the end
+          cleaned=$(printf "%s" "$body" | sed -e '/<!-- SHORT-REG-START -->/,/<!-- SHORT-REG-END -->/d')
+          updated_body="$cleaned"$'\n\n'"$new_block"
+          gh api repos/$repo/issues/comments/$utr_id -X PATCH -f body="$updated_body"
 
 
