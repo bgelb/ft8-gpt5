@@ -60,6 +60,10 @@ def _unpack_basecall(n: int) -> str:
 
 
 def _unpack28(n28: int) -> str:
+    """Decode a 28-bit token into a callsign or special token (CQ/DE/QRZ).
+
+    Returns an empty string for unsupported tokens (e.g., hashed or non-standard).
+    """
     # Tokens CQ/DE/QRZ
     if n28 < NTOKENS:
         if n28 == 2:

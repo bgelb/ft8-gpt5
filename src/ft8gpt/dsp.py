@@ -16,6 +16,12 @@ class Signal:
 
 
 def to_mono_float64(samples: NDArray[np.float_]) -> NDArray[np.float64]:
+    """
+    Convert input samples to mono float64 in the range roughly [-1, 1].
+
+    - If multi-channel, selects the first channel.
+    - If amplitudes look like raw integers, applies peak normalization.
+    """
     if samples.ndim == 1:
         x = samples
     else:
@@ -31,8 +37,11 @@ def to_mono_float64(samples: NDArray[np.float_]) -> NDArray[np.float64]:
 
 def resample_to_symbol_aligned_rate(signal: Signal, target_osr: int = 2) -> Signal:
     """
-    Resample to a rate where symbol boundaries align to integer samples:
-    target_rate = target_osr / SYMBOL_PERIOD_S.
+    Resample to a rate where symbol boundaries align to integer samples.
+
+    target_rate_hz = target_osr / SYMBOL_PERIOD_S
+
+    Returns a new Signal(samples, sample_rate_hz).
     """
     target_rate_hz = target_osr / SYMBOL_PERIOD_S
     # Use rational approximation for polyphase resampling
@@ -45,6 +54,7 @@ def resample_to_symbol_aligned_rate(signal: Signal, target_osr: int = 2) -> Sign
 
 
 def frame_symbol_count(duration_s: float) -> int:
+    """Return the number of symbols that fit in duration_s (rounded)."""
     return int(np.round(duration_s / SYMBOL_PERIOD_S))
 
 

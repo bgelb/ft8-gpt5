@@ -24,20 +24,23 @@ def decode_wav(path_or_file: Union[str, "os.PathLike[str]", IO[bytes]]) -> List[
     """
     Decode all FT8 signals in a 15-second WAV file or file-like object.
 
-    Accepts a filesystem path or a binary file-like object (e.g., io.BytesIO).
+    - Input may be a filesystem path or a binary file-like object (e.g., io.BytesIO).
+    - Output is a list of decoded candidates with fields carrying units in their names.
+      Some fields (start_time_s, frequency_hz, snr_db) are placeholders in this
+      basic API and currently reported as 0.0.
     """
     samples, sample_rate_hz = sf.read(path_or_file, always_2d=False)
-    x = samples[:, 0] if getattr(samples, "ndim", 1) > 1 else samples
-    x = np.asarray(x, dtype=np.float64)
+    mono_samples = samples[:, 0] if getattr(samples, "ndim", 1) > 1 else samples
+    mono_samples = np.asarray(mono_samples, dtype=np.float64)
     # Run a basic pipeline using embedded parity tables
-    decs = decode_block(x, float(sample_rate_hz))
+    decs = decode_block(mono_samples, float(sample_rate_hz))
     results: List[DecodeResult] = []
     for d in decs:
         # Reconstruct payload bytes (first 77 bits) and attempt to unpack as standard
         payload_bits = np.concatenate([d.bits_with_crc[:77], np.zeros(3, dtype=np.uint8)])
         # Pack to 10 bytes, MSB-first
         b = np.packbits(payload_bits)[:10]
-        # Set FT8 message type i3=1 for standard messages (bits 5..3 of last byte)
+        # Force FT8 message type i3=1 for standard messages (bits 5..3 of last byte per spec)
         last = int(b[-1])
         last = (last & (~0x38 & 0xFF)) | (1 << 3)
         b[-1] = np.uint8(last)

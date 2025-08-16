@@ -22,9 +22,14 @@ def min_sum_decode(
     config: BeliefPropagationConfig,
 ) -> Tuple[int, NDArray[np.uint8]]:
     """
-    Min-sum LDPC decoder for (174,91) code using sparse connectivity.
+    Min-sum LDPC decoder for (174,91) code using sparse connectivity (Mn, Nm).
 
-    Returns (num_unsatisfied_checks, hard_bits)
+    - llr_174: length-174 log-likelihood ratios (positive favors 0, negative favors 1)
+    - Mn: [N, dv] matrix giving check-node indices connected to variable n (use -1 for padding)
+    - Nm: [M, dc_max] matrix giving variable indices connected to check r (use -1 for padding)
+    - config: iteration and damping parameters
+
+    Returns (num_unsatisfied_checks, hard_bits).
     """
     # Initialize messages variable->check
     tov = np.zeros((LDPC_N, 3), dtype=np.float64)

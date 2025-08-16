@@ -38,6 +38,7 @@ class CandidateDecode:
 
 
 def llrs_from_waterfall(wf_group: np.ndarray) -> np.ndarray:
+	"""Compute 174 LLRs from a [num_symbols, 8] tone-energy slice (legacy helper)."""
 	# wf_group shape [num_symbols, 8]
 	llrs: List[float] = []
 	for s in range(wf_group.shape[0]):
@@ -55,7 +56,7 @@ def _downmix_and_decimate(
 ) -> Tuple[np.ndarray, float]:
 	"""Mix real samples by exp(-j2π carrier t) and decimate by an integer factor.
 
-	Returns (complex_baseband_decimated, new_sample_rate).
+	Returns (complex_baseband_decimated, new_sample_rate_hz).
 	"""
 	n = np.arange(samples.size, dtype=np.float64)
 	phi = -2.0 * np.pi * carrier_hz * (n / sample_rate_hz)
@@ -75,9 +76,9 @@ def _cached_decimator_sos(decim_factor: int):
 	Matches SciPy decimate's default approximately: rp=0.05 dB, Wn=0.8/decim.
 	"""
 	rp_db = 0.05
-	wn = 0.8 / float(max(1, decim_factor))
+	snr_norm_wn = 0.8 / float(max(1, decim_factor))
 	N = 8
-	return cheby1(N, rp_db, wn, output='sos')
+	return cheby1(N, rp_db, snr_norm_wn, output='sos')
 
 
 def _precompute_ctones(symbol_len: int, fs_hz: float) -> np.ndarray:
@@ -355,6 +356,7 @@ def _normalize_llrs_inplace(llrs: np.ndarray) -> None:
 
 
 def _sync_score_for_base(wf_mag: np.ndarray, start: int, base_idx: int) -> float:
+	"""Average Costas score across sync blocks for a given base index (legacy helper)."""
 	# Sum tone energy at Costas pattern positions across three sync blocks
 	num_symbols = wf_mag.shape[0]
 	score = 0.0
@@ -374,6 +376,15 @@ def _sync_score_for_base(wf_mag: np.ndarray, start: int, base_idx: int) -> float
 
 
 def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDecode]:
+	"""End-to-end decode of a buffer at sample_rate_hz returning candidate decodes.
+
+	Performs:
+	1) STFT-based Costas candidate search
+	2) Time/frequency refinement via Costas correlation at 200 Hz
+	3) Coherent demodulation of data symbols
+	4) LDPC decode with LLR normalization and both mapping hypotheses
+	5) CRC14 check and deduplication
+	"""
 	# Analyze the entire buffer using STFT-based Costas matched filter to find coarse candidates
 	n_fft = int(round(sample_rate_hz * SYMBOL_PERIOD_S))
 	if n_fft <= 0:
