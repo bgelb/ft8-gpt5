@@ -77,6 +77,15 @@ def find_sync_candidates_stft(signal: NDArray[np.float64], sample_rate_hz: float
     for j in range(FSK_TONES):
         ofs = j * tone_stride_bins
         bank[:, :, j] = pwr[:, ofs:ofs + num_bases]
+    # Half-bin interpolated bank (average adjacent bins)
+    num_bases_h = max(0, num_bins - 1 - (FSK_TONES - 1) * tone_stride_bins)
+    bankh = np.empty((num_frames, num_bases_h, FSK_TONES), dtype=np.float64)
+    for j in range(FSK_TONES):
+        ofs = j * tone_stride_bins
+        # average between bin ofs and ofs+1 for half-step
+        a = pwr[:, ofs:ofs + num_bases_h]
+        b = pwr[:, ofs + 1:ofs + 1 + num_bases_h]
+        bankh[:, :, j] = 0.5 * (a + b)
 
     frames_per_symbol = max(1, int(round((SYMBOL_PERIOD_S * sample_rate_hz) / hop)))
     frames_per_symbol = max(frames_per_symbol, 1)
@@ -114,7 +123,8 @@ def find_sync_candidates_stft(signal: NDArray[np.float64], sample_rate_hz: float
             grid[t0, :] = E / nvalid
         return grid
 
-    grid = score_grid(bank, num_bases)
+    grid0 = score_grid(bank, num_bases)
+    gridh = score_grid(bankh, num_bases_h)
 
     def peaks_along_bases(G: NDArray[np.float64]) -> NDArray[np.bool_]:
         if G.size == 0:
@@ -131,17 +141,22 @@ def find_sync_candidates_stft(signal: NDArray[np.float64], sample_rate_hz: float
         return peaks
 
     cand_list: List[StftCandidate] = []
-    if grid.size:
-        pk = peaks_along_bases(grid)
+    if grid0.size:
+        pk = peaks_along_bases(grid0)
         ys, xs = np.nonzero(pk)
         for y, x in zip(ys.tolist(), xs.tolist()):
-            cand_list.append(StftCandidate(frame_start=int(y), base_bin=int(x), frac=0.0, score=float(grid[y, x])))
+            cand_list.append(StftCandidate(frame_start=int(y), base_bin=int(x), frac=0.0, score=float(grid0[y, x])))
+    if gridh.size:
+        pkh = peaks_along_bases(gridh)
+        ys, xs = np.nonzero(pkh)
+        for y, x in zip(ys.tolist(), xs.tolist()):
+            cand_list.append(StftCandidate(frame_start=int(y), base_bin=int(x), frac=0.5, score=float(gridh[y, x])))
 
     # Augment with globally best grid cells to reduce miss from local-peak picking
     items: List[Tuple[float, int, int, float]] = []
     k_extra = max(200, (top_k or 80) * 6)
-    if grid.size:
-        g = grid.copy()
+    if grid0.size:
+        g = grid0.copy()
         if g.shape[1] >= 2:
             g[:, 0] = -1e30
             g[:, -1] = -1e30
@@ -149,6 +164,15 @@ def find_sync_candidates_stft(signal: NDArray[np.float64], sample_rate_hz: float
         ys, xs = np.unravel_index(idx, g.shape)
         for s, y, x in zip(g[ys, xs], ys, xs):
             items.append((float(s), int(y), int(x), 0.0))
+    if gridh.size:
+        gh = gridh.copy()
+        if gh.shape[1] >= 2:
+            gh[:, 0] = -1e30
+            gh[:, -1] = -1e30
+        idx = np.argsort(gh, axis=None)[-k_extra:]
+        ys, xs = np.unravel_index(idx, gh.shape)
+        for s, y, x in zip(gh[ys, xs], ys, xs):
+            items.append((float(s), int(y), int(x), 0.5))
     items.sort(key=lambda t: t[0], reverse=True)
     for s, y, x, frac in items:
         cand_list.append(StftCandidate(frame_start=y, base_bin=x, frac=frac, score=s))
