@@ -33,10 +33,10 @@ def tones_from_codeword(codeword_bits: np.ndarray) -> np.ndarray:
 def synthesize_ft8_audio(tones: np.ndarray, sample_rate_hz: float, base_freq_hz: float = 1000.0) -> np.ndarray:
     """Synthesize FT8 audio using GFSK-like phase shaping for spectral compliance.
 
-    Matches the reference's smoothed FM approach sufficiently for decoding tests.
+    Produces a float32 mono waveform in [-1, 1] at sample_rate_hz.
     """
     symbol_samples = int(round(sample_rate_hz * SYMBOL_PERIOD_S))
-    n = symbol_samples * NN
+    n_total = symbol_samples * NN
     # Precompute Gaussian pulse (BT≈2.0 as in reference)
     bt = 2.0
     K = np.pi * np.sqrt(2.0 / np.log(2.0))
@@ -48,9 +48,9 @@ def synthesize_ft8_audio(tones: np.ndarray, sample_rate_hz: float, base_freq_hz:
 
     pulse = np.array([gfsk_pulse(i) for i in range(3 * symbol_samples)], dtype=np.float64)
 
-    # Frequency increment per sample
+    # Frequency increment per sample (radians per sample)
     dphi_peak = 2 * np.pi / symbol_samples
-    dphi = np.full(n + 2 * symbol_samples, 2 * np.pi * base_freq_hz / sample_rate_hz, dtype=np.float64)
+    dphi = np.full(n_total + 2 * symbol_samples, 2 * np.pi * base_freq_hz / sample_rate_hz, dtype=np.float64)
     for i in range(NN):
         ib = i * symbol_samples
         dphi[ib:ib + 3 * symbol_samples] += dphi_peak * tones[i] * pulse
@@ -59,9 +59,9 @@ def synthesize_ft8_audio(tones: np.ndarray, sample_rate_hz: float, base_freq_hz:
     dphi[NN * symbol_samples:NN * symbol_samples + 2 * symbol_samples] += dphi_peak * pulse[:2 * symbol_samples] * tones[-1]
 
     # Integrate phase and synthesize
-    x = np.zeros(n, dtype=np.float64)
+    x = np.zeros(n_total, dtype=np.float64)
     phi = 0.0
-    for k in range(n):
+    for k in range(n_total):
         x[k] = np.sin(phi)
         phi = (phi + dphi[k + symbol_samples]) % (2 * np.pi)
 

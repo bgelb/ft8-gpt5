@@ -23,8 +23,9 @@ def compute_waterfall_symbols(signal: NDArray[np.float64], sample_rate_hz: float
     """
     Compute per-symbol FFT magnitudes at tone-aligned bin grid and arrange 8-tone groups per base bin.
 
-    - Uses window length = round(fs * SYMBOL_PERIOD_S)
-    - Frequency resolution equals tone spacing when fs is 12000 Hz
+    - Window length n_fft = round(sample_rate_hz * SYMBOL_PERIOD_S)
+    - Frequency resolution equals tone spacing when sample_rate_hz is 12000 Hz
+    - Returns magnitude in dB with per-symbol median subtracted (simple noise normalization)
     """
     n_fft = int(round(sample_rate_hz * SYMBOL_PERIOD_S))
     if start_sample + num_symbols * n_fft > signal.size:

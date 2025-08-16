@@ -104,7 +104,10 @@ def get_systematic_parity() -> np.ndarray:
 
 
 def encode174_bits_systematic(a91_bits: np.ndarray) -> np.ndarray:
-    """Encode 91-bit payload+CRC into 174-bit codeword using systematic parity from embedded tables."""
+    """Encode 91-bit payload+CRC into 174-bit codeword using systematic parity from embedded tables.
+
+    Produces the codeword in original codeword bit order (0..173) matching the H matrix columns.
+    """
     if a91_bits.shape[0] != LDPC_K:
         raise ValueError("a91_bits must have length LDPC_K")
     # Build full encoder based on column permutation so that Hpiv is invertible
