@@ -390,13 +390,17 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDe
 	# Track unique decodes by packed bits to avoid duplicates across candidates
 	seen_keys = set()
 
-	# Run STFT-based candidate search across the whole buffer
-	candidates, stft_nfft, hop = find_sync_candidates_stft(samples, sample_rate_hz, top_k=80)
+	# Run 2D matched-filter candidate search across the whole buffer with time padding
+	pad_pre = int(round(0.5 * sample_rate_hz))
+	pad_post = int(round(1.5 * sample_rate_hz))
+	xpad = np.pad(samples.astype(np.float64, copy=False), (pad_pre, pad_post))
+	# Candidate search
+	candidates, stft_nfft, hop = find_sync_candidates_stft(xpad, sample_rate_hz, top_k=400)
 
 	# Process top candidates with fine refinement and coherent demod
 	for cand in candidates:
 		# Coarse absolute sample index corresponding to the first Costas symbol
-		coarse_abs_start = cand.frame_start * hop
+		coarse_abs_start = cand.frame_start * hop - pad_pre
 		if coarse_abs_start < 0:
 			continue
 
@@ -433,8 +437,8 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDe
 		sync_E = coherent_symbol_energies(y2, fs2, pos0_2, df_hz, sync_times)
 		if sync_E.shape[0] != 21:
 			continue
-		# Require a strong Costas lock for proceeding
-		if count_costas_matches(sync_E) < 18:
+		# Require a strong Costas lock for proceeding (slightly relaxed)
+		if count_costas_matches(sync_E) < 16:
 			continue
 
 		# Micro-refine alignment using Costas SNR as objective (do not use bit matches)
@@ -532,5 +536,3 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDe
 					seen_keys.add(key)
 					results.append(CandidateDecode(start_symbol=0, ldpc_errors=0, bits_with_crc=bwc_hd_sys))
 	return results
-
-

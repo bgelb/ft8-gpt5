@@ -68,7 +68,7 @@ def run_cfo_sweep(cfg: dict, outdir: Path) -> None:
 def run_occupancy(cfg: dict, outdir: Path) -> None:
 	sr = float(cfg.get("sr", 12000.0))
 	snr_db = float(cfg.get("snr_db", -16))
-	top_k = int(cfg.get("top_k", 150))
+	top_k_raw = int(cfg.get("top_k_raw", 800))
 	K_eval = int(cfg.get("K_eval", 80))
 	seed = int(cfg.get("seed", 1234))
 	nsigs_list = list(cfg.get("num_sigs", [10, 20, 40, 80]))
@@ -84,11 +84,11 @@ def run_occupancy(cfg: dict, outdir: Path) -> None:
 			xn = apply_awgn(x, snr_db, rng)
 			signals.append(xn)
 			truth.append(float(freqs[i]))
-		slot = mix_signals(signals, [0.0] * num_sigs)
-		cands, nfft, hop = find_sync_candidates_stft(slot.astype(np.float64), sr, top_k=top_k)
-		bin_hz = sr / float(nfft) if nfft > 0 else 6.25
-		# Top-K value list
-		cand_vals = [((c.base_bin + c.frac) * bin_hz, c.score) for c in cands[:K_eval]]
+			slot = mix_signals(signals, [0.0] * num_sigs)
+			cands, nfft, hop = find_sync_candidates_stft(slot.astype(np.float64), sr, top_k=top_k_raw)
+			bin_hz = sr / float(nfft) if nfft > 0 else 6.25
+			# Top-K value list
+			cand_vals = [((c.base_bin + c.frac) * bin_hz, c.score) for c in cands[:K_eval]]
 		prec, fp = precision_fp_at_k(truth, cand_vals, tol=6.25)
 		recall = 0.0
 		if len(truth) > 0:
