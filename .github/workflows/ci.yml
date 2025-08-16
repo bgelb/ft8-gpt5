@@ -88,6 +88,7 @@ jobs:
         run: |
           mkdir -p reports
           set -o pipefail
+          export SHORT_SUMMARY_PATH=reports/short_summary.txt
           pytest -vv -ra --durations=0 --maxfail=1 --color=yes --capture=tee-sys --junitxml=reports/junit.xml --log-file=reports/pytest.log --log-file-level=INFO 2>&1 | tee reports/pytest.out
 
       - name: Summarize short regression decodes
@@ -135,47 +136,52 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           check_name: 'Unit Test Results'
 
-      - name: Comment short regression decodes on PR
+      - name: Update Unit Test Results comment with short regression
         if: always() && github.event_name == 'pull_request' && runner.os == 'Linux'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          src_file=""
-          if [ -f reports/pytest.out ]; then src_file=reports/pytest.out; elif [ -f reports/pytest.log ]; then src_file=reports/pytest.log; fi
-          title="Short Regression Decodes"
-          body="Short Regression Decodes:"
-          wavs="unknown"
-          if [ -f reports/short_wav_count.txt ]; then wavs=$(cat reports/short_wav_count.txt); fi
-          if [ -n "$src_file" ]; then
-            line=$(grep -F "SHORT TOTAL:" "$src_file" | tail -n 1 || true)
-            if [ -n "$line" ]; then
+          # Prefer machine-readable summary from the test
+          if [ -f reports/short_summary.txt ]; then
+            pe=$(sed -n 's/.*pos_expected=\([0-9][0-9]*\).*/\1/p' reports/short_summary.txt)
+            pm=$(sed -n 's/.*pos_matched=\([0-9][0-9]*\).*/\1/p' reports/short_summary.txt)
+          else
+            src_file=""
+            if [ -f reports/pytest.out ]; then src_file=reports/pytest.out; elif [ -f reports/pytest.log ]; then src_file=reports/pytest.log; fi
+            if [ -n "$src_file" ]; then
+              line=$(grep -F "SHORT TOTAL:" "$src_file" | tail -n 1 || true)
               pe=$(printf "%s" "$line" | sed -n 's/.*pos_expected=\([0-9][0-9]*\).*/\1/p')
               pm=$(printf "%s" "$line" | sed -n 's/.*pos_matched=\([0-9][0-9]*\).*/\1/p')
-              if [ -n "$pe" ] && [ -n "$pm" ]; then
-                pct=$(awk -v pm="$pm" -v pe="$pe" 'BEGIN { if (pe>0) printf "%.1f", (pm/pe*100); }')
-                if [ -n "$pct" ]; then
-                  body="$body"$'\n'"Matched: ${pm} / ${pe} (${pct}%)"
-                else
-                  body="$body"$'\n'"Matched: ${pm} / ${pe}"
-                fi
-              else
-                body="$body"$'\n'"Totals line found, but could not parse numbers."
-              fi
-            else
-              body="$body"$'\n'"Short regression totals not found in output (test may have been skipped). WAV files detected: $wavs"
             fi
-          else
-            body="$body"$'\n'"Pytest output/log not found. WAV files detected: $wavs"
           fi
 
-          # Find existing comment by this workflow to update (idempotent)
+          if [ -n "$pe" ] && [ -n "$pm" ]; then
+            pct=$(awk -v pm="$pm" -v pe="$pe" 'BEGIN { if (pe>0) printf "%.1f", (pm/pe*100); }')
+            if [ -n "$pct" ]; then
+              line="Short Regression Decodes: Matched: ${pm} / ${pe} (${pct}%)"
+            else
+              line="Short Regression Decodes: Matched: ${pm} / ${pe}"
+            fi
+          else
+            wavs="unknown"
+            if [ -f reports/short_wav_count.txt ]; then wavs=$(cat reports/short_wav_count.txt); fi
+            line="Short Regression Decodes: not available (WAV files detected: $wavs)"
+          fi
+
           pr_number=${{ github.event.number }}
           repo=${{ github.repository }}
-          existing_id=$(gh api repos/$repo/issues/$pr_number/comments --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | contains("'"$title"'")) | .id' | head -n1 || true)
-          if [ -n "$existing_id" ]; then
-            gh api repos/$repo/issues/comments/$existing_id -X PATCH -f body="$body"
-          else
-            gh api repos/$repo/issues/$pr_number/comments -X POST -f body="$body"
+          # Find the Unit Test Results comment from the unit test results action
+          utr_id=$(gh api repos/$repo/issues/$pr_number/comments --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | contains("Unit Test Results")) | .id' | head -n1 || true)
+          if [ -z "$utr_id" ]; then
+            echo "No Unit Test Results comment found; skipping append."
+            exit 0
           fi
+
+          body=$(gh api repos/$repo/issues/comments/$utr_id --jq .body)
+          new_block="<!-- SHORT-REG-START -->\n${line}\n<!-- SHORT-REG-END -->"
+          # Remove existing block if present, then append the new block at the end
+          cleaned=$(printf "%s" "$body" | sed -e '/<!-- SHORT-REG-START -->/,/<!-- SHORT-REG-END -->/d')
+          updated_body="$cleaned"$'\n\n'"$new_block"
+          gh api repos/$repo/issues/comments/$utr_id -X PATCH -f body="$updated_body"
 
 
