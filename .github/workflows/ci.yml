@@ -23,6 +23,7 @@ jobs:
       contents: read
       checks: write
       pull-requests: write
+      issues: write
     steps:
       - name: Checkout repository (with submodules)
         uses: actions/checkout@v4
@@ -116,5 +117,46 @@ jobs:
           files: reports/junit.xml
           github_token: ${{ secrets.GITHUB_TOKEN }}
           check_name: 'Unit Test Results'
+
+      - name: Comment short regression decodes on PR
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          src_file=""
+          if [ -f reports/pytest.out ]; then src_file=reports/pytest.out; elif [ -f reports/pytest.log ]; then src_file=reports/pytest.log; fi
+          title="Short Regression Decodes"
+          body="Short Regression Decodes:\n"
+          if [ -n "$src_file" ]; then
+            line=$(grep -F "SHORT TOTAL:" "$src_file" | tail -n 1 || true)
+            if [ -n "$line" ]; then
+              pe=$(printf "%s" "$line" | sed -n 's/.*pos_expected=\([0-9][0-9]*\).*/\1/p')
+              pm=$(printf "%s" "$line" | sed -n 's/.*pos_matched=\([0-9][0-9]*\).*/\1/p')
+              if [ -n "$pe" ] && [ -n "$pm" ]; then
+                pct=$(awk -v pm="$pm" -v pe="$pe" 'BEGIN { if (pe>0) printf "%.1f", (pm/pe*100); }')
+                if [ -n "$pct" ]; then
+                  body+="Matched: ${pm} / ${pe} (${pct}%)\n"
+                else
+                  body+="Matched: ${pm} / ${pe}\n"
+                fi
+              else
+                body+="Totals line found, but could not parse numbers.\n"
+              fi
+            else
+              body+="Short regression totals not found in output (test may have been skipped).\n"
+            fi
+          else
+            body+="Pytest output/log not found.\n"
+          fi
+
+          # Find existing comment by this workflow to update (idempotent)
+          pr_number=${{ github.event.number }}
+          repo=${{ github.repository }}
+          existing_id=$(gh api repos/$repo/issues/$pr_number/comments --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | contains("'"$title"'")) | .id' | head -n1 || true)
+          if [ -n "$existing_id" ]; then
+            gh api repos/$repo/issues/comments/$existing_id -X PATCH -f body="$body"
+          else
+            gh api repos/$repo/issues/$pr_number/comments -X POST -f body="$body"
+          fi
 
 
