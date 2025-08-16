@@ -47,13 +47,16 @@ def _select_fixed_20_percent(wavs: list[Path], base: Path) -> list[Path]:
 def test_short_dataset_regression_20pct():
 	dataset = Path(__file__).resolve().parents[1] / "external" / "ft8_lib" / "test" / "wav"
 	if not dataset.exists():
+		print("SHORT TOTAL: pos_expected=0 pos_matched=0 (dataset-not-available)")
 		pytest.skip("dataset not available")
 	wavs = sorted(dataset.rglob("*.wav"))
 	if not wavs:
+		print("SHORT TOTAL: pos_expected=0 pos_matched=0 (no-wav-files)")
 		pytest.skip("no wav files")
 
 	sample = _select_fixed_20_percent(wavs, dataset)
 	if not sample:
+		print("SHORT TOTAL: pos_expected=0 pos_matched=0 (no-files-selected)")
 		pytest.skip("no files selected in 20% sampling")
 
 	total_pos_expected = 0

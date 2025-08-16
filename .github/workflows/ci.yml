@@ -29,6 +29,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          lfs: true
+
+      - name: Fetch Git LFS for submodules
+        run: |
+          git lfs install
+          git submodule foreach --recursive 'git lfs install && git lfs pull && git lfs checkout || true'
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -69,6 +75,15 @@ jobs:
           make -C external/ft8_lib clean
           make -C external/ft8_lib decode_ft8 CFLAGS="-D_DARWIN_C_SOURCE -D_POSIX_C_SOURCE=200809L" LDFLAGS="" LDLIBS="-lm"
 
+      - name: Ensure test WAV dataset present
+        run: |
+          mkdir -p reports
+          git -C external/ft8_lib lfs pull || true
+          git -C external/ft8_lib lfs checkout || true
+          count=$(find external/ft8_lib/test/wav -type f -name '*.wav' 2>/dev/null | wc -l | tr -d ' ')
+          echo "$count" > reports/short_wav_count.txt
+          echo "Short dataset wav files: $count"
+
       - name: Run tests
         run: |
           mkdir -p reports
@@ -81,6 +96,8 @@ jobs:
           echo "### Short Regression Decodes" >> "$GITHUB_STEP_SUMMARY"
           src_file=""
           if [ -f reports/pytest.out ]; then src_file=reports/pytest.out; elif [ -f reports/pytest.log ]; then src_file=reports/pytest.log; fi
+          wavs="unknown"
+          if [ -f reports/short_wav_count.txt ]; then wavs=$(cat reports/short_wav_count.txt); fi
           if [ -n "$src_file" ]; then
             line=$(grep -F "SHORT TOTAL:" "$src_file" | tail -n 1 || true)
             if [ -n "$line" ]; then
@@ -97,10 +114,10 @@ jobs:
                 echo "Totals line found, but could not parse numbers." >> "$GITHUB_STEP_SUMMARY"
               fi
             else
-              echo "Short regression totals not found in output (test may have been skipped)." >> "$GITHUB_STEP_SUMMARY"
+              echo "Short regression totals not found in output (test may have been skipped). WAV files detected: $wavs" >> "$GITHUB_STEP_SUMMARY"
             fi
           else
-            echo "Pytest output/log not found." >> "$GITHUB_STEP_SUMMARY"
+            echo "Pytest output/log not found. WAV files detected: $wavs" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Upload test reports
@@ -119,14 +136,16 @@ jobs:
           check_name: 'Unit Test Results'
 
       - name: Comment short regression decodes on PR
-        if: always() && github.event_name == 'pull_request'
+        if: always() && github.event_name == 'pull_request' && runner.os == 'Linux'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           src_file=""
           if [ -f reports/pytest.out ]; then src_file=reports/pytest.out; elif [ -f reports/pytest.log ]; then src_file=reports/pytest.log; fi
           title="Short Regression Decodes"
-          body="Short Regression Decodes:\n"
+          body="Short Regression Decodes:"
+          wavs="unknown"
+          if [ -f reports/short_wav_count.txt ]; then wavs=$(cat reports/short_wav_count.txt); fi
           if [ -n "$src_file" ]; then
             line=$(grep -F "SHORT TOTAL:" "$src_file" | tail -n 1 || true)
             if [ -n "$line" ]; then
@@ -135,18 +154,18 @@ jobs:
               if [ -n "$pe" ] && [ -n "$pm" ]; then
                 pct=$(awk -v pm="$pm" -v pe="$pe" 'BEGIN { if (pe>0) printf "%.1f", (pm/pe*100); }')
                 if [ -n "$pct" ]; then
-                  body+="Matched: ${pm} / ${pe} (${pct}%)\n"
+                  body="$body"$'\n'"Matched: ${pm} / ${pe} (${pct}%)"
                 else
-                  body+="Matched: ${pm} / ${pe}\n"
+                  body="$body"$'\n'"Matched: ${pm} / ${pe}"
                 fi
               else
-                body+="Totals line found, but could not parse numbers.\n"
+                body="$body"$'\n'"Totals line found, but could not parse numbers."
               fi
             else
-              body+="Short regression totals not found in output (test may have been skipped).\n"
+              body="$body"$'\n'"Short regression totals not found in output (test may have been skipped). WAV files detected: $wavs"
             fi
           else
-            body+="Pytest output/log not found.\n"
+            body="$body"$'\n'"Pytest output/log not found. WAV files detected: $wavs"
           fi
 
           # Find existing comment by this workflow to update (idempotent)
