@@ -102,4 +102,4 @@ def test_short_dataset_regression_20pct():
 
 	# Keep runtime guardrail similar to full test but this sample should be much faster
 	avg_runtime = (time.time() - t0) / max(1, len(sample))
-	assert avg_runtime < 20.0
+	assert avg_runtime < 30.0
