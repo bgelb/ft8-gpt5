@@ -95,9 +95,9 @@ def refine_sync_fine(
 	sample_rate_hz: float,
 	base_freq_hz: float,
 	coarse_abs_start_sample: int,
-	time_search_ms: int = 80,
-	time_step_ms: int = 5,
-	freq_search_hz: float = 3.2,
+	time_search_ms: int = 160,
+	time_step_ms: int = 2,
+	freq_search_hz: float = 6.0,
 	freq_step_hz: float = 0.25,
 ) -> Tuple[int, float, float]:
 	"""Refine time (±time_search in steps) and frequency (±freq_search in steps) using
@@ -124,9 +124,9 @@ def refine_sync_fine_precomputed(
 	y2: np.ndarray,
 	fs2: float,
 	pos0_2: int,
-	time_search_ms: int = 80,
-	time_step_ms: int = 5,
-	freq_search_hz: float = 3.2,
+	time_search_ms: int = 160,
+	time_step_ms: int = 2,
+	freq_search_hz: float = 6.0,
 	freq_step_hz: float = 0.25,
 ) -> Tuple[int, float, float]:
 	"""Vectorized refinement given precomputed 200 Hz baseband.
@@ -390,13 +390,20 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDe
 	# Track unique decodes by packed bits to avoid duplicates across candidates
 	seen_keys = set()
 
-	# Run STFT-based candidate search across the whole buffer
-	candidates, stft_nfft, hop = find_sync_candidates_stft(samples, sample_rate_hz, top_k=80)
+	# Run 2D matched-filter candidate search across the whole buffer
+	# Use time padding only for long buffers (e.g., full 15 s recordings).
+	dur_s = float(samples.size) / float(sample_rate_hz) if sample_rate_hz > 0 else 0.0
+	use_pad = dur_s >= 8.0
+	pad_pre = int(round(0.5 * sample_rate_hz)) if use_pad else 0
+	pad_post = int(round(1.5 * sample_rate_hz)) if use_pad else 0
+	x_in = np.pad(samples.astype(np.float64, copy=False), (pad_pre, pad_post)) if use_pad else samples.astype(np.float64, copy=False)
+	# Candidate search with manageable cap for runtime
+	candidates, stft_nfft, hop = find_sync_candidates_stft(x_in, sample_rate_hz, top_k=150)
 
 	# Process top candidates with fine refinement and coherent demod
 	for cand in candidates:
 		# Coarse absolute sample index corresponding to the first Costas symbol
-		coarse_abs_start = cand.frame_start * hop
+		coarse_abs_start = cand.frame_start * hop - pad_pre
 		if coarse_abs_start < 0:
 			continue
 
@@ -433,8 +440,9 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDe
 		sync_E = coherent_symbol_energies(y2, fs2, pos0_2, df_hz, sync_times)
 		if sync_E.shape[0] != 21:
 			continue
-		# Require a strong Costas lock for proceeding
-		if count_costas_matches(sync_E) < 18:
+		# Require a Costas lock; for long buffers be stricter for speed, for short slots be lenient
+		min_matches = 14 if use_pad else 10
+		if count_costas_matches(sync_E) < min_matches:
 			continue
 
 		# Micro-refine alignment using Costas SNR as objective (do not use bit matches)
@@ -532,5 +540,3 @@ def decode_block(samples: np.ndarray, sample_rate_hz: float) -> List[CandidateDe
 					seen_keys.add(key)
 					results.append(CandidateDecode(start_symbol=0, ldpc_errors=0, bits_with_crc=bwc_hd_sys))
 	return results
-
-
